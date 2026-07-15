@@ -51,6 +51,15 @@ class InMemoryRepo:
             s.current_step = to_step
             return True
 
+    async def save_and_advance(self, session_id, step_id, markdown, from_step, to_step) -> bool:
+        async with self._lock:  # emulate PgRepo's single-transaction semantics
+            self._artifacts.setdefault(session_id, {})[step_id] = markdown
+            s = self._sessions.get(session_id)
+            if s is None or s.current_step != from_step:
+                return False
+            s.current_step = to_step
+            return True
+
     async def set_status(self, session_id: int, status: str) -> None:
         s = self._sessions.get(session_id)
         if s:

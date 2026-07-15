@@ -34,7 +34,18 @@ def test_chunk_respects_4096_limit():
     text = "\n".join("строка " + str(i) for i in range(2000))
     parts = chunk_html(text)
     assert all(len(p) <= 4096 for p in parts)
-    assert "".join(parts).replace("\n", "") == text.replace("\n", "") or len(parts) >= 1
+    # content round-trip (no tags here, so nothing is added by balancing)
+    assert "".join(parts).replace("\n", "") == text.replace("\n", "")
+
+
+def test_chunk_keeps_paired_tags_balanced_on_overlong_line():
+    # a single markdown-bold line longer than the limit
+    text = "<b>" + ("z" * 9000) + "</b>"
+    parts = chunk_html(text)
+    assert len(parts) > 1
+    for p in parts:
+        assert len(p) <= 4096
+        assert p.count("<b>") == p.count("</b>")  # each chunk is valid standalone HTML
 
 
 def test_chunk_does_not_split_a_tag():

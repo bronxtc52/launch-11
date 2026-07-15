@@ -60,6 +60,7 @@ def init_sentry(dsn: str, release: str | None = None) -> None:
         dsn=dsn,
         release=release,
         send_default_pii=False,
+        include_local_variables=False,  # keep message text / tokens out of stack frame vars (review #7)
         before_send=scrub_event,
         traces_sample_rate=0.0,
     )

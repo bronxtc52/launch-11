@@ -34,6 +34,12 @@ class Repo(Protocol):
         """Atomic conditional: set current_step=to_step only if it is currently from_step.
         Returns False if the session was not at from_step (lost race / already advanced)."""
 
+    async def save_and_advance(
+        self, session_id: int, step_id: str, markdown: str, from_step: str, to_step: str
+    ) -> bool:
+        """Upsert the artifact AND conditionally advance current_step in ONE transaction
+        (plan A1/C1). Returns whether the pointer advanced."""
+
     async def set_status(self, session_id: int, status: str) -> None: ...
 
     async def add_message(self, session_id: int, role: str, text: str) -> None: ...

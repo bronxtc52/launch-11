@@ -75,6 +75,23 @@ class PgRepo:
             )
             return {r["step_id"]: r["markdown"] for r in rows}
 
+    async def save_and_advance(self, session_id, step_id, markdown, from_step, to_step) -> bool:
+        async with self.pool.acquire() as con, con.transaction():
+            await con.execute(
+                """
+                INSERT INTO artifacts (session_id, step_id, markdown) VALUES ($1, $2, $3)
+                ON CONFLICT (session_id, step_id)
+                DO UPDATE SET markdown = EXCLUDED.markdown, updated_at = now()
+                """,
+                session_id, step_id, markdown,
+            )
+            res = await con.execute(
+                "UPDATE sessions SET current_step=$3, updated_at=now() "
+                "WHERE id=$1 AND current_step=$2",
+                session_id, from_step, to_step,
+            )
+            return res.endswith(" 1")
+
     async def advance_step(self, session_id: int, from_step: str, to_step: str) -> bool:
         async with self.pool.acquire() as con:
             res = await con.execute(
@@ -100,8 +117,8 @@ class PgRepo:
     async def get_messages(self, session_id: int, limit: int) -> list[tuple[str, str]]:
         async with self.pool.acquire() as con:
             rows = await con.fetch(
-                "SELECT role, text FROM (SELECT role, text, created_at FROM messages "
-                "WHERE session_id=$1 ORDER BY id DESC LIMIT $2) t ORDER BY created_at ASC",
+                "SELECT role, text FROM (SELECT id, role, text FROM messages "
+                "WHERE session_id=$1 ORDER BY id DESC LIMIT $2) t ORDER BY id ASC",
                 session_id, limit,
             )
             return [(r["role"], r["text"]) for r in rows]

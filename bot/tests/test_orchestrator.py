@@ -56,3 +56,20 @@ async def test_finish_rejected_when_incomplete(orch):
     s = await orch.save_artifact(s, "L1", "only one")
     with pytest.raises(StepError):
         await orch.finish(s)
+
+
+async def test_double_finish_rejected(orch):
+    s = await orch.start(1)
+    for sid in ["L1", "L2", "L3", "L4"]:
+        s = await orch.save_artifact(s, sid, f"# {sid}")
+    await orch.finish(s)  # first ok, status -> finished
+    with pytest.raises(StepError):
+        await orch.finish(s)  # second must be rejected (no duplicate delivery)
+
+
+async def test_session_byte_cap_enforced(orch):
+    s = await orch.start(1)
+    orch.settings.max_session_artifact_bytes = 100
+    with pytest.raises(StepError):
+        await orch.save_artifact(s, "L1", "x" * 200)
+    assert s.current_step == "L1"  # rejected, no advance

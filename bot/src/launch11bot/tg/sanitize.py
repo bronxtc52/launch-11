@@ -46,20 +46,46 @@ def _split_long_line(line: str, limit: int) -> list[str]:
     return out
 
 
-def chunk_html(text: str, limit: int = TG_LIMIT) -> list[str]:
-    """Split HTML into <=limit chunks on line boundaries; never split a tag.
+_TAG_RE = re.compile(r"</?([a-zA-Z0-9]+)[^>]*>")
+_BALANCE_RESERVE = 48  # headroom for reopened/closed tags added by _balance_tags
 
-    Over-long single lines are split tag-safely at the character level.
-    """
+
+def _balance_tags(chunks: list[str]) -> list[str]:
+    """Ensure each chunk is valid standalone HTML: close tags left open at a chunk
+    boundary and reopen them at the next chunk (Telegram rejects unbalanced tags)."""
+    out: list[str] = []
+    carry: list[str] = []  # tags still open, carried from the previous chunk
+    for ch in chunks:
+        body = "".join(f"<{t}>" for t in carry) + ch
+        stack: list[str] = []
+        for m in _TAG_RE.finditer(body):
+            tag = m.group(1).lower()
+            if m.group(0).startswith("</"):
+                if tag in stack:
+                    stack.reverse()
+                    stack.remove(tag)
+                    stack.reverse()
+            else:
+                stack.append(tag)
+        out.append(body + "".join(f"</{t}>" for t in reversed(stack)))
+        carry = list(stack)
+    return out
+
+
+def chunk_html(text: str, limit: int = TG_LIMIT) -> list[str]:
+    """Split HTML into <=limit chunks on line boundaries; never split a tag, and
+    keep paired tags (<b>…</b>) balanced within each chunk even across an
+    over-long single line."""
     if len(text) <= limit:
         return [text]
+    work = max(64, limit - _BALANCE_RESERVE)  # leave room for balancing tags
     chunks: list[str] = []
     buf = ""
     for line in text.split("\n"):
-        segments = _split_long_line(line, limit) if len(line) > limit else [line]
+        segments = _split_long_line(line, work) if len(line) > work else [line]
         for seg in segments:
             add = seg if not buf else "\n" + seg
-            if len(buf) + len(add) <= limit:
+            if len(buf) + len(add) <= work:
                 buf += add
             else:
                 if buf:
@@ -67,4 +93,4 @@ def chunk_html(text: str, limit: int = TG_LIMIT) -> list[str]:
                 buf = seg
     if buf:
         chunks.append(buf)
-    return chunks or [""]
+    return _balance_tags(chunks or [""])

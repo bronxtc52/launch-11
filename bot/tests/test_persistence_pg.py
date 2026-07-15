@@ -45,6 +45,24 @@ async def test_progress_survives_reconnect():
         await pool.close()
 
 
+async def test_save_and_advance_is_atomic():
+    from launch11bot.db.pg_repo import PgRepo
+    pool = await _fresh_pool()
+    try:
+        repo = PgRepo(pool)
+        s = await repo.start_session(888, "idea", "lite")
+        # correct guard: at L1 -> advance to L2, artifact persisted
+        assert await repo.save_and_advance(s.id, "L1", "body1", "L1", "L2") is True
+        # stale guard: not at L1 anymore -> pointer must not move, but artifact still upserts
+        assert await repo.save_and_advance(s.id, "L1", "body2", "L1", "L2") is False
+        again = await repo.get_active_session(888)
+        assert again.current_step == "L2"
+        arts = await repo.get_artifacts(s.id)
+        assert arts["L1"] == "body2"
+    finally:
+        await pool.close()
+
+
 async def test_concurrent_start_yields_single_active_session():
     from launch11bot.db.pg_repo import PgRepo
     pool = await _fresh_pool()

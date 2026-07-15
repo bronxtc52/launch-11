@@ -41,15 +41,21 @@ class Orchestrator:
         if cur_idx >= 0 and idx > cur_idx:
             raise StepError("нельзя перескочить вперёд через незавершённые шаги")
 
-        # persist (upsert — re-saving overwrites, never duplicates)
-        await self.repo.save_artifact(session.id, step_id, markdown)
+        # per-session size cap (council S3 / review #3)
+        existing = await self.repo.get_artifacts(session.id)
+        total = sum(len(v.encode("utf-8")) for k, v in existing.items() if k != step_id)
+        if total + len(markdown.encode("utf-8")) > self.settings.max_session_artifact_bytes:
+            raise StepError("суммарный размер артефактов сессии превышен")
 
-        # advance ONLY when the saved step is the current one; re-saving a past
-        # step overwrites its artifact without moving the pointer.
         if idx == cur_idx:
+            # advance ONLY when saving the current step — upsert + conditional
+            # advance atomically in one transaction (plan A1/C1 / review #4).
             nxt = steps.next_step_id(version, step_id) or FINISH_MARKER
-            if await self.repo.advance_step(session.id, step_id, nxt):
+            if await self.repo.save_and_advance(session.id, step_id, markdown, step_id, nxt):
                 session.current_step = nxt
+        else:
+            # re-saving a past step: overwrite its artifact, do not move the pointer
+            await self.repo.save_artifact(session.id, step_id, markdown)
         return session
 
     async def can_finish(self, session: Session) -> bool:
@@ -57,6 +63,8 @@ class Orchestrator:
         return set(steps.step_ids(session.version)).issubset(arts.keys())
 
     async def finish(self, session: Session) -> str:
+        if session.status == "finished":
+            raise StepError("сессия уже завершена")  # guard double delivery (review #9)
         if not await self.can_finish(session):
             raise StepError("пайплайн не завершён — не все шаги заполнены")
         arts = await self.repo.get_artifacts(session.id)
@@ -80,5 +88,6 @@ class Orchestrator:
 
 def _slugify(text: str) -> str:
     import re
-    s = re.sub(r"[^a-z0-9]+", "-", text.lower().strip()).strip("-")
+    # keep unicode letters/digits (Cyrillic included) so the idea survives in the filename
+    s = re.sub(r"[^\w]+", "-", text.lower().strip(), flags=re.UNICODE).strip("-_")
     return s[:40] or "product"
