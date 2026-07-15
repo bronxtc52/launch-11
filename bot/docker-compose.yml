@@ -1,0 +1,30 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: launch11
+      POSTGRES_PASSWORD: launch11
+      POSTGRES_DB: launch11
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U launch11"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  bot:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://launch11:launch11@postgres:5432/launch11
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # long-polling: NO ingress/ports, single replica (avoids getUpdates 409 conflict)
+    restart: unless-stopped
+
+volumes:
+  pgdata:
