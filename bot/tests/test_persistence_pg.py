@@ -14,8 +14,10 @@ async def _fresh_pool():
     from launch11bot.db.pg_repo import apply_migrations
     pool = await asyncpg.create_pool(DSN)
     async with pool.acquire() as con:
-        # clean slate for the test user range
-        await con.execute("DROP TABLE IF EXISTS messages, artifacts, sessions CASCADE")
+        # clean slate — drop the migrations ledger too, else apply_migrations skips rebuild
+        await con.execute(
+            "DROP TABLE IF EXISTS messages, artifacts, sessions, schema_migrations CASCADE"
+        )
     await apply_migrations(pool)
     return pool
 
