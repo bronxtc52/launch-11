@@ -13,11 +13,14 @@ MAX_TOOL_ITERS = 6
 
 
 async def handle_incoming(
-    *, user_id, text, orch, billing, claude, repo, settings,
+    *, user_id, text, version, orch, billing, claude, repo, settings,
     on_text, on_document, on_notice, on_needs_payment, on_denied,
 ):
     """Two gates BEFORE any Claude call: optional beta allowlist, then billing
-    entitlement. No entitlement → invoice, no session, no Claude (criterion 5)."""
+    entitlement. No entitlement → invoice, no session, no Claude (criterion 5).
+
+    Entitlement is consumed here on the FIRST message (real work start), NOT on the
+    version-pick click — clicking a version must never burn a free run (review architect-1)."""
     beta = getattr(settings, "beta_allowlist", set())
     if beta and user_id not in beta:
         await on_denied()
@@ -25,7 +28,7 @@ async def handle_incoming(
     session = await orch.resume(user_id)
     if session is None:
         # consume an entitlement atomically as the session is created
-        result = await billing.start_session(user_id, slug=text, version="lite")
+        result = await billing.start_session(user_id, slug=text, version=version)
         if result is NEEDS_PAYMENT:
             await on_needs_payment()
             return None
@@ -34,23 +37,6 @@ async def handle_incoming(
         orch=orch, claude=claude, repo=repo, settings=settings, session=session,
         user_text=text, on_text=on_text, on_document=on_document, on_notice=on_notice,
     )
-
-
-async def handle_version_pick(
-    *, user_id, version, orch, billing, on_greet, on_needs_payment, on_exists,
-):
-    """Button path: create a session for the chosen version through the billing gate.
-    Uses the CLICKING user's id (never a message author) so the invoice payload binds
-    to the right user (regression guard for the on_pick_version invoice bug)."""
-    if await orch.resume(user_id):
-        await on_exists()
-        return None
-    result = await billing.start_session(user_id, slug=f"product-{user_id}", version=version)
-    if result is NEEDS_PAYMENT:
-        await on_needs_payment()
-        return None
-    await on_greet(result)
-    return result
 
 
 async def run_user_turn(

@@ -8,8 +8,8 @@ from aiogram import Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import (BufferedInputFile, CallbackQuery, Message, PreCheckoutQuery)
 
-from ..app.turn import handle_incoming, handle_version_pick
-from ..billing.service import NEEDS_PAYMENT, BillingService
+from ..app.turn import handle_incoming
+from ..billing.service import BillingService
 from ..db.repo import FINISH_MARKER
 from ..llm.client import ClaudeClient
 from ..pipeline.orchestrator import Orchestrator
@@ -33,6 +33,7 @@ def build_dispatcher(settings, repo) -> Dispatcher:
     claude = ClaudeClient(settings)
     billing = BillingService(repo, settings.free_runs, settings.stars_price, settings.stars_label)
     beta = settings.beta_allowlist
+    pending_version: dict[int, str] = {}  # user_id -> chosen version, until first message
 
     def gated_out(user_id: int) -> bool:
         return bool(beta) and user_id not in beta
@@ -79,21 +80,15 @@ def build_dispatcher(settings, repo) -> Dispatcher:
         if version not in VERSION_NAMES:
             await cq.answer("Неизвестная версия")
             return
-
-        async def on_greet(_session):
-            await cq.message.answer(
-                f"Версия: {VERSION_NAMES[version]}. Расскажи свою идею — с чего начнём?",
-                reply_markup=nav_keyboard())
-
-        async def on_exists():
+        if await orch.resume(cq.from_user.id):
             await cq.answer("У тебя уже есть активная сессия — /reset чтобы начать заново")
-
-        await handle_version_pick(
-            user_id=cq.from_user.id, version=version, orch=orch, billing=billing,
-            on_greet=on_greet,
-            on_needs_payment=lambda: send_invoice(cq.from_user.id, cq.message),
-            on_exists=on_exists,
-        )
+            return
+        # Just record the choice — NO billing here. The free run is consumed on the first
+        # actual message, so clicking a version never burns an entitlement (review architect-1).
+        pending_version[cq.from_user.id] = version
+        await cq.message.answer(
+            f"Версия: {VERSION_NAMES[version]}. Расскажи свою идею — с чего начнём?",
+            reply_markup=nav_keyboard())
         await cq.answer()
 
     @dp.message(Command("reset"))
@@ -148,13 +143,14 @@ def build_dispatcher(settings, repo) -> Dispatcher:
     @dp.message(F.text)
     async def on_text(msg: Message):
         try:
+            version = pending_version.pop(msg.from_user.id, "lite")
             await handle_incoming(
-                user_id=msg.from_user.id, text=msg.text, orch=orch, billing=billing,
-                claude=claude, repo=repo, settings=settings,
+                user_id=msg.from_user.id, text=msg.text, version=version, orch=orch,
+                billing=billing, claude=claude, repo=repo, settings=settings,
                 on_text=lambda t: send_html(msg, t),
                 on_document=lambda slug, spec: send_spec(msg, slug, spec),
                 on_notice=lambda m: msg.answer(m),
-                on_needs_payment=lambda: send_invoice(msg),
+                on_needs_payment=lambda: send_invoice(msg.from_user.id, msg),
                 on_denied=lambda: msg.answer(DENIED),
             )
         except Exception:

@@ -1,5 +1,5 @@
 """Phase 3 — billing gate before Claude (criterion 5)."""
-from launch11bot.app.turn import handle_incoming, handle_version_pick
+from launch11bot.app.turn import handle_incoming
 from launch11bot.billing.service import BillingService
 from launch11bot.llm.client import Turn
 
@@ -29,8 +29,8 @@ async def test_needs_payment_blocks_claude(orch, repo):
         invoiced.append(1)
 
     res = await handle_incoming(
-        user_id=5, text="моя идея", orch=orch, billing=billing, claude=fake, repo=repo,
-        settings=orch.settings, on_text=_noop, on_document=_noop, on_notice=_noop,
+        user_id=5, text="моя идея", version="lite", orch=orch, billing=billing, claude=fake,
+        repo=repo, settings=orch.settings, on_text=_noop, on_document=_noop, on_notice=_noop,
         on_needs_payment=on_needs_payment, on_denied=_noop,
     )
     assert fake.calls == 0        # criterion 5: no Claude call when payment needed
@@ -47,44 +47,28 @@ async def test_free_run_proceeds_to_claude(orch, repo):
         texts.append(t)
 
     await handle_incoming(
-        user_id=6, text="идея портала", orch=orch, billing=billing, claude=fake, repo=repo,
-        settings=orch.settings, on_text=on_text, on_document=_noop, on_notice=_noop,
+        user_id=6, text="идея портала", version="full", orch=orch, billing=billing, claude=fake,
+        repo=repo, settings=orch.settings, on_text=on_text, on_document=_noop, on_notice=_noop,
         on_needs_payment=_noop, on_denied=_noop,
     )
     assert fake.calls == 1
-    assert (await repo.get_billing(6))["free_used"] == 1
+    b = await repo.get_billing(6)
+    assert b["free_used"] == 1
+    # the chosen version is honored when the session is created on the first message
+    assert (await orch.resume(6)).version == "full"
 
 
-async def test_version_pick_grants_free_run(orch, repo):
+async def test_version_pick_does_not_bill(orch, repo):
+    """Clicking a version records intent but must NOT consume an entitlement (architect-1).
+    Consumption happens only when the first message creates the session."""
     billing = BillingService(repo, free_runs=1, stars_price=100, stars_label="Прогон")
-    greeted = []
-
-    async def on_greet(s):
-        greeted.append(s)
-
-    async def boom():
-        raise AssertionError("should not need payment / already exist")
-
-    await handle_version_pick(user_id=8, version="full", orch=orch, billing=billing,
-                              on_greet=on_greet, on_needs_payment=boom, on_exists=boom)
-    assert len(greeted) == 1
-    assert greeted[0].version == "full" and greeted[0].current_step == "F1"
-    assert (await repo.get_billing(8))["free_used"] == 1
-
-
-async def test_version_pick_needs_payment_after_free_used(orch, repo):
-    billing = BillingService(repo, free_runs=1, stars_price=100, stars_label="Прогон")
-    await billing.start_session(9, slug="a", version="lite")  # burn free run
-    await repo.delete_session(9)
-    invoiced = []
-
-    async def on_needs_payment():
-        invoiced.append(9)  # bot.py binds the invoice to this (clicking) user id
-
-    async def boom(*a):
-        raise AssertionError("unexpected")
-
-    await handle_version_pick(user_id=9, version="full", orch=orch, billing=billing,
-                              on_greet=boom, on_needs_payment=on_needs_payment, on_exists=boom)
-    assert invoiced == [9]
-    assert (await repo.get_billing(9))["free_used"] == 1  # no extra consume on a denied pick
+    # no session, no billing call happened yet -> free_used stays 0
+    assert (await repo.get_billing(50))["free_used"] == 0
+    # first message consumes exactly once
+    fake = FakeClaude([Turn(text="ok")])
+    await handle_incoming(
+        user_id=50, text="идея", version="full", orch=orch, billing=billing, claude=fake,
+        repo=repo, settings=orch.settings, on_text=_noop, on_document=_noop, on_notice=_noop,
+        on_needs_payment=_noop, on_denied=_noop,
+    )
+    assert (await repo.get_billing(50))["free_used"] == 1

@@ -6,7 +6,7 @@ payments are validated (currency/amount/payload) before crediting.
 """
 from __future__ import annotations
 
-from ..pipeline.orchestrator import _slugify
+from ..pipeline.slug import slugify
 
 NEEDS_PAYMENT = object()  # sentinel returned when the user must pay to start a new run
 
@@ -22,7 +22,7 @@ class BillingService:
         """Consume one entitlement and create the session, or return NEEDS_PAYMENT.
         Resuming an existing active session consumes nothing."""
         session = await self.repo.start_session_with_entitlement(
-            user_id, _slugify(slug), version, self.free_runs)
+            user_id, slugify(slug), version, self.free_runs)
         return session if session is not None else NEEDS_PAYMENT
 
     def validate_payment(self, user_id: int, currency: str, total_amount: int,
