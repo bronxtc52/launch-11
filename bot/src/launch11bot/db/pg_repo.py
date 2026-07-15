@@ -132,6 +132,57 @@ class PgRepo:
             )
             return [{"n": r["n"], "title": r["title"], "markdown": r["markdown"]} for r in rows]
 
+    async def start_session_with_entitlement(self, tg_user_id, slug, version, free_runs):
+        first = steps.first_step_id(version)
+        async with self.pool.acquire() as con, con.transaction():
+            # ensure a billing row and lock it — serializes concurrent starts for this user
+            await con.execute(
+                "INSERT INTO billing (tg_user_id) VALUES ($1) ON CONFLICT DO NOTHING", tg_user_id)
+            b = await con.fetchrow(
+                "SELECT free_used, paid_credits FROM billing WHERE tg_user_id=$1 FOR UPDATE",
+                tg_user_id)
+            existing = await con.fetchrow(
+                "SELECT * FROM sessions WHERE tg_user_id=$1 AND status='active'", tg_user_id)
+            if existing:
+                return _row_to_session(existing)  # resume — no consume
+            if b["free_used"] < free_runs:
+                await con.execute(
+                    "UPDATE billing SET free_used=free_used+1, updated_at=now() WHERE tg_user_id=$1",
+                    tg_user_id)
+            elif b["paid_credits"] > 0:
+                await con.execute(
+                    "UPDATE billing SET paid_credits=paid_credits-1, updated_at=now() "
+                    "WHERE tg_user_id=$1", tg_user_id)
+            else:
+                return None  # no entitlement — payment needed, no session created
+            row = await con.fetchrow(
+                "INSERT INTO sessions (tg_user_id, slug, version, current_step, status) "
+                "VALUES ($1, $2, $3, $4, 'active') RETURNING *",
+                tg_user_id, slug, version, first)
+            return _row_to_session(row)
+
+    async def grant_paid_credit(self, charge_id, tg_user_id, stars) -> bool:
+        async with self.pool.acquire() as con, con.transaction():
+            res = await con.execute(
+                "INSERT INTO payments (charge_id, tg_user_id, stars) VALUES ($1, $2, $3) "
+                "ON CONFLICT (charge_id) DO NOTHING",
+                charge_id, tg_user_id, stars)
+            if not res.endswith(" 1"):  # duplicate charge — no second credit
+                return False
+            await con.execute(
+                "INSERT INTO billing (tg_user_id) VALUES ($1) ON CONFLICT DO NOTHING", tg_user_id)
+            await con.execute(
+                "UPDATE billing SET paid_credits=paid_credits+1, updated_at=now() WHERE tg_user_id=$1",
+                tg_user_id)
+            return True
+
+    async def get_billing(self, tg_user_id) -> dict:
+        async with self.pool.acquire() as con:
+            r = await con.fetchrow(
+                "SELECT free_used, paid_credits FROM billing WHERE tg_user_id=$1", tg_user_id)
+            return ({"free_used": r["free_used"], "paid_credits": r["paid_credits"]} if r
+                    else {"free_used": 0, "paid_credits": 0})
+
     async def add_message(self, session_id: int, role: str, text: str) -> None:
         async with self.pool.acquire() as con:
             await con.execute(

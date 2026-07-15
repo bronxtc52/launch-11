@@ -51,6 +51,21 @@ class Repo(Protocol):
     async def get_adrs(self, session_id: int) -> list[dict]:
         """ADRs for the session, ordered by number: [{n, title, markdown}]."""
 
+    async def start_session_with_entitlement(
+        self, tg_user_id: int, slug: str, version: str, free_runs: int
+    ) -> Session | None:
+        """Atomically: return the active session if one exists (NO consume); else consume one
+        entitlement (free_used++ if free_used<free_runs, else paid_credits-- if >0) and create
+        the session. Returns None if no entitlement (payment needed). Consumption is bound to
+        session CREATION so a duplicate update / double-click consumes at most once."""
+
+    async def grant_paid_credit(self, charge_id: str, tg_user_id: int, stars: int) -> bool:
+        """Idempotent: insert the payment by charge_id; credit +1 only if newly inserted.
+        Returns whether a credit was newly granted (False on duplicate charge_id)."""
+
+    async def get_billing(self, tg_user_id: int) -> dict:
+        """Read-only billing snapshot: {free_used, paid_credits}. For display, never a gate."""
+
     async def add_message(self, session_id: int, role: str, text: str) -> None: ...
 
     async def get_messages(self, session_id: int, limit: int) -> list[tuple[str, str]]: ...

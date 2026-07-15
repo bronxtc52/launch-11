@@ -20,8 +20,18 @@ class Settings(BaseSettings):
     claude_timeout_s: float = 90.0
     claude_max_retries: int = 2
 
+    # billing (Phase 3)
+    free_runs: int = 1
+    stars_price: int = 100
+    stars_label: str = "Прогон пайплайна"
+    beta_allowlist_ids: str = ""  # optional rollout kill-switch; empty => billing is the only gate
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property
     def allowed_user_ids(self) -> set[int]:
         return parse_allowed(self.allowed_tg_user_ids)
+
+    @property
+    def beta_allowlist(self) -> set[int]:
+        return parse_allowed(self.beta_allowlist_ids)

@@ -16,7 +16,8 @@ async def _fresh_pool():
     async with pool.acquire() as con:
         # clean slate — drop the migrations ledger too, else apply_migrations skips rebuild
         await con.execute(
-            "DROP TABLE IF EXISTS adrs, messages, artifacts, sessions, schema_migrations CASCADE"
+            "DROP TABLE IF EXISTS payments, billing, adrs, messages, artifacts, sessions, "
+            "schema_migrations CASCADE"
         )
     await apply_migrations(pool)
     return pool

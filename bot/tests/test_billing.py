@@ -51,6 +51,14 @@ async def test_wrong_currency_or_amount_not_credited(billing, repo):
     assert (await repo.get_billing(1))["paid_credits"] == 0
 
 
+async def test_wrong_payload_not_credited(billing, repo):
+    # payload bound to a different user must not credit (criterion 12)
+    g = await billing.on_successful_payment(1, charge_id="cx", currency="XTR",
+                                            total_amount=100, invoice_payload="run:999")
+    assert g is False
+    assert (await repo.get_billing(1))["paid_credits"] == 0
+
+
 async def test_resume_does_not_consume(billing, repo):
     await billing.start_session(1, slug="a", version="lite")
     # starting again while an active session exists must return it WITHOUT consuming

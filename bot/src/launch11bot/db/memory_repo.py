@@ -13,6 +13,8 @@ class InMemoryRepo:
         self._artifacts: dict[int, dict[str, str]] = {}   # session_id -> {step_id: md}
         self._messages: dict[int, list[tuple[str, str]]] = {}
         self._adrs: dict[int, list[dict]] = {}
+        self._billing: dict[int, dict] = {}       # tg_user_id -> {free_used, paid_credits}
+        self._payments: dict[str, dict] = {}      # charge_id -> {...}
         self._seq = 0
         self._lock = asyncio.Lock()
 
@@ -81,6 +83,38 @@ class InMemoryRepo:
 
     async def get_adrs(self, session_id: int) -> list[dict]:
         return [dict(a) for a in self._adrs.get(session_id, [])]
+
+    async def start_session_with_entitlement(self, tg_user_id, slug, version, free_runs):
+        async with self._lock:  # emulate the single-transaction consume+create of PgRepo
+            existing = self._active_for(tg_user_id)
+            if existing:
+                return existing  # no consume on resume
+            b = self._billing.setdefault(tg_user_id, {"free_used": 0, "paid_credits": 0})
+            if b["free_used"] < free_runs:
+                b["free_used"] += 1
+            elif b["paid_credits"] > 0:
+                b["paid_credits"] -= 1
+            else:
+                return None  # needs payment — no session created
+            self._seq += 1
+            s = Session(self._seq, tg_user_id, slug, version,
+                        current_step=steps.first_step_id(version), status="active")
+            self._sessions[s.id] = s
+            self._artifacts[s.id] = {}
+            self._messages[s.id] = []
+            return s
+
+    async def grant_paid_credit(self, charge_id, tg_user_id, stars) -> bool:
+        async with self._lock:
+            if charge_id in self._payments:
+                return False  # duplicate charge — no double credit
+            self._payments[charge_id] = {"tg_user_id": tg_user_id, "stars": stars}
+            b = self._billing.setdefault(tg_user_id, {"free_used": 0, "paid_credits": 0})
+            b["paid_credits"] += 1
+            return True
+
+    async def get_billing(self, tg_user_id) -> dict:
+        return dict(self._billing.get(tg_user_id, {"free_used": 0, "paid_credits": 0}))
 
     async def set_current_step(self, session_id: int, step_id: str) -> None:
         s = self._sessions.get(session_id)
