@@ -28,13 +28,32 @@ def tool_defs(version: str) -> list[dict]:
         },
         {
             "name": "set_version",
-            "description": "Выбрать версию пайплайна. В текущей фазе доступна только 'lite'.",
+            "description": (
+                "Выбрать версию пайплайна: 'full' (11 шагов), 'lite' (сжато), "
+                "'spec_only' (только техчасть 8-11). Сменить можно только пока не сохранён "
+                "ни один артефакт."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "version": {"type": "string", "enum": ["lite"]},
+                    "version": {"type": "string", "enum": ["lite", "full", "spec_only"]},
                 },
                 "required": ["version"],
+            },
+        },
+        {
+            "name": "create_adr",
+            "description": (
+                "Зафиксировать архитектурное решение (ADR) со сквозной нумерацией. "
+                "Вызывай на шагах фиксации продуктовых (F6) и технических (F8) решений."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Краткое название решения."},
+                    "markdown": {"type": "string", "description": "Тело ADR в markdown."},
+                },
+                "required": ["title", "markdown"],
             },
         },
         {

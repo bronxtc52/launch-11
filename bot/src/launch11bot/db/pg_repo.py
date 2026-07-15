@@ -107,6 +107,31 @@ class PgRepo:
                 "UPDATE sessions SET status=$2, updated_at=now() WHERE id=$1", session_id, status
             )
 
+    async def set_version(self, session_id: int, version: str, first_step: str) -> None:
+        async with self.pool.acquire() as con:
+            await con.execute(
+                "UPDATE sessions SET version=$2, current_step=$3, updated_at=now() WHERE id=$1",
+                session_id, version, first_step,
+            )
+
+    async def create_adr(self, session_id: int, title: str, markdown: str) -> int:
+        async with self.pool.acquire() as con, con.transaction():
+            n = await con.fetchval(
+                "SELECT COALESCE(MAX(n), 0) + 1 FROM adrs WHERE session_id=$1", session_id
+            )
+            await con.execute(
+                "INSERT INTO adrs (session_id, n, title, markdown) VALUES ($1, $2, $3, $4)",
+                session_id, n, title, markdown,
+            )
+            return n
+
+    async def get_adrs(self, session_id: int) -> list[dict]:
+        async with self.pool.acquire() as con:
+            rows = await con.fetch(
+                "SELECT n, title, markdown FROM adrs WHERE session_id=$1 ORDER BY n", session_id
+            )
+            return [{"n": r["n"], "title": r["title"], "markdown": r["markdown"]} for r in rows]
+
     async def add_message(self, session_id: int, role: str, text: str) -> None:
         async with self.pool.acquire() as con:
             await con.execute(

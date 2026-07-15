@@ -13,8 +13,10 @@ from ..db.repo import FINISH_MARKER
 from ..llm.client import ClaudeClient
 from ..pipeline.orchestrator import Orchestrator
 from .access import is_allowed
-from .keyboards import nav_keyboard
+from .keyboards import nav_keyboard, version_keyboard
 from .sanitize import chunk_html, md_to_telegram_html
+
+VERSION_NAMES = {"full": "Full (11 шагов)", "lite": "Lite", "spec_only": "Spec-only (техчасть)"}
 
 log = logging.getLogger(__name__)
 
@@ -58,7 +60,28 @@ def build_dispatcher(settings, repo) -> Dispatcher:
             await msg.answer("Все шаги пройдены — напиши что-нибудь, чтобы собрать spec.md, "
                              "или нажми «Начать заново».", reply_markup=nav_keyboard())
         else:
-            await msg.answer(WELCOME, reply_markup=nav_keyboard())
+            await msg.answer(WELCOME)
+            await msg.answer("Выбери версию пайплайна:", reply_markup=version_keyboard())
+
+    @dp.callback_query(F.data.startswith("ver:"))
+    async def on_pick_version(cq: CallbackQuery):
+        if not is_allowed(cq.from_user.id, allowed):
+            await cq.answer(DENIED)
+            return
+        version = cq.data.split(":", 1)[1]
+        if version not in VERSION_NAMES:
+            await cq.answer("Неизвестная версия")
+            return
+        existing = await orch.resume(cq.from_user.id)
+        if existing:
+            await cq.answer("У тебя уже есть активная сессия — /reset чтобы начать заново")
+            return
+        await orch.start(cq.from_user.id, version=version)
+        await cq.message.answer(
+            f"Версия: {VERSION_NAMES[version]}. Расскажи свою идею — с чего начнём?",
+            reply_markup=nav_keyboard(),
+        )
+        await cq.answer()
 
     @dp.message(Command("reset"))
     async def on_reset(msg: Message):

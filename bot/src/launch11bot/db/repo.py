@@ -42,6 +42,15 @@ class Repo(Protocol):
 
     async def set_status(self, session_id: int, status: str) -> None: ...
 
+    async def set_version(self, session_id: int, version: str, first_step: str) -> None:
+        """Change a session's pipeline version and reset current_step (empty session only)."""
+
+    async def create_adr(self, session_id: int, title: str, markdown: str) -> int:
+        """Append an ADR with the next sequential number; returns that number."""
+
+    async def get_adrs(self, session_id: int) -> list[dict]:
+        """ADRs for the session, ordered by number: [{n, title, markdown}]."""
+
     async def add_message(self, session_id: int, role: str, text: str) -> None: ...
 
     async def get_messages(self, session_id: int, limit: int) -> list[tuple[str, str]]: ...

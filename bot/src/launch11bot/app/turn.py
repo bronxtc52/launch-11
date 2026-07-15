@@ -52,8 +52,8 @@ async def run_user_turn(
         for tool_id, name, args in turn.tool_calls:
             res = await dispatch(orch, session, name, args)
             session = res.session
-            if res.ok and name == "save_artifact":
-                await on_notice(res.message)  # deterministic "✅ Шаг N зафиксирован" to the user
+            if res.ok and name in ("save_artifact", "create_adr"):
+                await on_notice(res.message)  # deterministic "✅ …" surfaced to the user
             if res.spec:
                 await on_document(session.slug, res.spec)
             results.append({"type": "tool_result", "tool_use_id": tool_id, "content": res.message})
