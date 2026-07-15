@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from ..db.repo import FINISH_MARKER, Session
 from . import assemble, steps
+from .slug import slugify as _slugify
 
 
 class StepError(Exception):
@@ -105,10 +106,3 @@ class Orchestrator:
                 for s in steps.PIPELINES[session.version]
             ],
         }
-
-
-def _slugify(text: str) -> str:
-    import re
-    # keep unicode letters/digits (Cyrillic included) so the idea survives in the filename
-    s = re.sub(r"[^\w]+", "-", text.lower().strip(), flags=re.UNICODE).strip("-_")
-    return s[:40] or "product"

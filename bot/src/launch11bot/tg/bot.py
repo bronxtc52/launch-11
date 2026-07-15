@@ -1,4 +1,4 @@
-"""aiogram handlers — thin adapters over app.turn (gate -> orchestrator -> Claude)."""
+"""aiogram handlers — thin adapters over app.turn + billing (Telegram Stars)."""
 from __future__ import annotations
 
 import io
@@ -6,25 +6,23 @@ import logging
 
 from aiogram import Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import BufferedInputFile, CallbackQuery, Message
+from aiogram.types import (BufferedInputFile, CallbackQuery, Message, PreCheckoutQuery)
 
 from ..app.turn import handle_incoming
+from ..billing.service import BillingService
 from ..db.repo import FINISH_MARKER
 from ..llm.client import ClaudeClient
 from ..pipeline.orchestrator import Orchestrator
-from .access import is_allowed
 from .keyboards import nav_keyboard, version_keyboard
 from .sanitize import chunk_html, md_to_telegram_html
 
-VERSION_NAMES = {"full": "Full (11 шагов)", "lite": "Lite", "spec_only": "Spec-only (техчасть)"}
-
 log = logging.getLogger(__name__)
 
+VERSION_NAMES = {"full": "Full (11 шагов)", "lite": "Lite", "spec_only": "Spec-only (техчасть)"}
 WELCOME = (
     "Привет! Я проведу тебя по пайплайну запуска продукта Маргулана Сейсембая: "
     "от сырой идеи до готовой spec.md. На каждом шаге я задаю вопросы и помогаю "
-    "сформулировать.\n\n"
-    "Для начала выбери версию пайплайна — кнопкой ниже 👇"
+    "сформулировать.\n\nПервый прогон бесплатный. Выбери версию пайплайна 👇"
 )
 DENIED = "Доступ ограничен на этапе бета-теста."
 
@@ -33,7 +31,12 @@ def build_dispatcher(settings, repo) -> Dispatcher:
     dp = Dispatcher()
     orch = Orchestrator(repo, settings)
     claude = ClaudeClient(settings)
-    allowed = settings.allowed_user_ids
+    billing = BillingService(repo, settings.free_runs, settings.stars_price, settings.stars_label)
+    beta = settings.beta_allowlist
+    pending_version: dict[int, str] = {}  # user_id -> chosen version, until first message
+
+    def gated_out(user_id: int) -> bool:
+        return bool(beta) and user_id not in beta
 
     async def send_html(msg: Message, text: str, keyboard: bool = True):
         for part in chunk_html(md_to_telegram_html(text)):
@@ -44,12 +47,18 @@ def build_dispatcher(settings, repo) -> Dispatcher:
         buf = io.BytesIO(spec.encode("utf-8"))
         await msg.answer_document(
             BufferedInputFile(buf.getvalue(), filename=f"{slug}-spec.md"),
-            caption="Готово! Вот твоя spec.md 🎉",
-        )
+            caption="Готово! Вот твоя spec.md 🎉")
+
+    async def send_invoice(user_id: int, chat_msg: Message):
+        # user_id MUST be the paying user (never a message author — cq.message is authored
+        # by the bot), so the invoice payload binds to them and crediting succeeds.
+        await chat_msg.answer(
+            "Бесплатный прогон использован. Чтобы начать новый — оплати звёздами Telegram:")
+        await chat_msg.answer_invoice(**billing.invoice_params(user_id))
 
     @dp.message(Command("start"))
     async def on_start(msg: Message):
-        if not is_allowed(msg.from_user.id, allowed):
+        if gated_out(msg.from_user.id):
             await msg.answer(DENIED)
             return
         existing = await orch.resume(msg.from_user.id)
@@ -64,27 +73,27 @@ def build_dispatcher(settings, repo) -> Dispatcher:
 
     @dp.callback_query(F.data.startswith("ver:"))
     async def on_pick_version(cq: CallbackQuery):
-        if not is_allowed(cq.from_user.id, allowed):
+        if gated_out(cq.from_user.id):
             await cq.answer(DENIED)
             return
         version = cq.data.split(":", 1)[1]
         if version not in VERSION_NAMES:
             await cq.answer("Неизвестная версия")
             return
-        existing = await orch.resume(cq.from_user.id)
-        if existing:
+        if await orch.resume(cq.from_user.id):
             await cq.answer("У тебя уже есть активная сессия — /reset чтобы начать заново")
             return
-        await orch.start(cq.from_user.id, version=version)
+        # Just record the choice — NO billing here. The free run is consumed on the first
+        # actual message, so clicking a version never burns an entitlement (review architect-1).
+        pending_version[cq.from_user.id] = version
         await cq.message.answer(
             f"Версия: {VERSION_NAMES[version]}. Расскажи свою идею — с чего начнём?",
-            reply_markup=nav_keyboard(),
-        )
+            reply_markup=nav_keyboard())
         await cq.answer()
 
     @dp.message(Command("reset"))
     async def on_reset(msg: Message):
-        if not is_allowed(msg.from_user.id, allowed):
+        if gated_out(msg.from_user.id):
             await msg.answer(DENIED)
             return
         await repo.delete_session(msg.from_user.id)
@@ -92,7 +101,7 @@ def build_dispatcher(settings, repo) -> Dispatcher:
 
     @dp.callback_query(F.data == "progress")
     async def on_progress(cq: CallbackQuery):
-        if not is_allowed(cq.from_user.id, allowed):
+        if gated_out(cq.from_user.id):
             await cq.answer(DENIED)
             return
         session = await orch.resume(cq.from_user.id)
@@ -106,22 +115,42 @@ def build_dispatcher(settings, repo) -> Dispatcher:
 
     @dp.callback_query(F.data == "reset")
     async def on_reset_cb(cq: CallbackQuery):
-        if not is_allowed(cq.from_user.id, allowed):
+        if gated_out(cq.from_user.id):
             await cq.answer(DENIED)
             return
         await repo.delete_session(cq.from_user.id)
         await cq.message.answer("Сессия удалена. Напиши /start, чтобы начать заново.")
         await cq.answer()
 
+    @dp.pre_checkout_query()
+    async def on_pre_checkout(pcq: PreCheckoutQuery):
+        # fail-closed BEFORE the user is charged: validate currency/amount/payload-binding
+        ok = billing.validate_payment(pcq.from_user.id, pcq.currency, pcq.total_amount,
+                                      pcq.invoice_payload)
+        await pcq.answer(ok=ok, error_message=None if ok else "Некорректный платёж")
+
+    @dp.message(F.successful_payment)
+    async def on_paid(msg: Message):
+        sp = msg.successful_payment
+        granted = await billing.on_successful_payment(
+            msg.from_user.id, charge_id=sp.telegram_payment_charge_id,
+            currency=sp.currency, total_amount=sp.total_amount, invoice_payload=sp.invoice_payload)
+        if granted:
+            await msg.answer("Оплата получена — доступен ещё один прогон! Напиши /start 🚀")
+        else:
+            await msg.answer("Платёж обработан.")  # duplicate/invalid — never double-credited
+
     @dp.message(F.text)
     async def on_text(msg: Message):
         try:
+            version = pending_version.pop(msg.from_user.id, "lite")
             await handle_incoming(
-                user_id=msg.from_user.id, text=msg.text, allowed=allowed,
-                orch=orch, claude=claude, repo=repo, settings=settings,
+                user_id=msg.from_user.id, text=msg.text, version=version, orch=orch,
+                billing=billing, claude=claude, repo=repo, settings=settings,
                 on_text=lambda t: send_html(msg, t),
                 on_document=lambda slug, spec: send_spec(msg, slug, spec),
                 on_notice=lambda m: msg.answer(m),
+                on_needs_payment=lambda: send_invoice(msg.from_user.id, msg),
                 on_denied=lambda: msg.answer(DENIED),
             )
         except Exception:

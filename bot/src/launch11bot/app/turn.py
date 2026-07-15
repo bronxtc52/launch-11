@@ -4,26 +4,35 @@ Handlers in tg/bot.py are thin adapters over these functions.
 """
 from __future__ import annotations
 
+from ..billing.service import NEEDS_PAYMENT
 from ..llm.history import normalize_history
 from ..llm.system_prompt import build_system
 from ..pipeline.tool_dispatcher import dispatch
-from ..tg.access import is_allowed
 
 MAX_TOOL_ITERS = 6
 
 
 async def handle_incoming(
-    *, user_id, text, allowed, orch, claude, repo, settings,
-    on_text, on_document, on_notice, on_denied,
+    *, user_id, text, version, orch, billing, claude, repo, settings,
+    on_text, on_document, on_notice, on_needs_payment, on_denied,
 ):
-    """Gate FIRST (Claude must not be called for denied users — criterion 9),
-    then run the dialogue turn."""
-    if not is_allowed(user_id, allowed):
+    """Two gates BEFORE any Claude call: optional beta allowlist, then billing
+    entitlement. No entitlement → invoice, no session, no Claude (criterion 5).
+
+    Entitlement is consumed here on the FIRST message (real work start), NOT on the
+    version-pick click — clicking a version must never burn a free run (review architect-1)."""
+    beta = getattr(settings, "beta_allowlist", set())
+    if beta and user_id not in beta:
         await on_denied()
         return None
     session = await orch.resume(user_id)
     if session is None:
-        session = await orch.start(user_id, idea_slug=text)  # slug from the user's idea
+        # consume an entitlement atomically as the session is created
+        result = await billing.start_session(user_id, slug=text, version=version)
+        if result is NEEDS_PAYMENT:
+            await on_needs_payment()
+            return None
+        session = result
     return await run_user_turn(
         orch=orch, claude=claude, repo=repo, settings=settings, session=session,
         user_text=text, on_text=on_text, on_document=on_document, on_notice=on_notice,
