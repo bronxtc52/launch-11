@@ -99,3 +99,4 @@ class InMemoryRepo:
                 self._sessions.pop(sid, None)
                 self._artifacts.pop(sid, None)
                 self._messages.pop(sid, None)
+                self._adrs.pop(sid, None)

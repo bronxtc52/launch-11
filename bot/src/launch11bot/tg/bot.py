@@ -22,9 +22,9 @@ log = logging.getLogger(__name__)
 
 WELCOME = (
     "Привет! Я проведу тебя по пайплайну запуска продукта Маргулана Сейсембая: "
-    "от сырой идеи до готовой spec.md. Пройдём несколько шагов (смысл → архитектура → задачи), "
-    "на каждом я задаю вопросы и помогаю сформулировать.\n\n"
-    "Расскажи свою идею своими словами — как другу. С чего хочешь начать?"
+    "от сырой идеи до готовой spec.md. На каждом шаге я задаю вопросы и помогаю "
+    "сформулировать.\n\n"
+    "Для начала выбери версию пайплайна — кнопкой ниже 👇"
 )
 DENIED = "Доступ ограничен на этапе бета-теста."
 
@@ -60,8 +60,7 @@ def build_dispatcher(settings, repo) -> Dispatcher:
             await msg.answer("Все шаги пройдены — напиши что-нибудь, чтобы собрать spec.md, "
                              "или нажми «Начать заново».", reply_markup=nav_keyboard())
         else:
-            await msg.answer(WELCOME)
-            await msg.answer("Выбери версию пайплайна:", reply_markup=version_keyboard())
+            await msg.answer(WELCOME, reply_markup=version_keyboard())
 
     @dp.callback_query(F.data.startswith("ver:"))
     async def on_pick_version(cq: CallbackQuery):
