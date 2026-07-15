@@ -25,12 +25,17 @@ class BillingService:
             user_id, _slugify(slug), version, self.free_runs)
         return session if session is not None else NEEDS_PAYMENT
 
+    def validate_payment(self, user_id: int, currency: str, total_amount: int,
+                         invoice_payload: str) -> bool:
+        """Only our XTR invoice, at our price, bound to THIS user (council security-1, crit 11/12).
+        Used both in pre_checkout (fail-closed BEFORE payment) and before crediting."""
+        return (currency == "XTR"
+                and total_amount == self.stars_price
+                and invoice_payload == self.payload_for(user_id))
+
     async def on_successful_payment(self, user_id: int, charge_id: str, currency: str,
-                                    total_amount: int, invoice_payload: str | None = None) -> bool:
-        # validate BEFORE crediting (council security-1): only our XTR invoice at our price
-        if currency != "XTR" or total_amount != self.stars_price:
-            return False
-        if invoice_payload is not None and invoice_payload != self.payload_for(user_id):
+                                    total_amount: int, invoice_payload: str) -> bool:
+        if not self.validate_payment(user_id, currency, total_amount, invoice_payload):
             return False
         return await self.repo.grant_paid_credit(charge_id, user_id, total_amount)
 

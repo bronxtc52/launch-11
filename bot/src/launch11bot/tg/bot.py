@@ -8,7 +8,7 @@ from aiogram import Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import (BufferedInputFile, CallbackQuery, Message, PreCheckoutQuery)
 
-from ..app.turn import handle_incoming
+from ..app.turn import handle_incoming, handle_version_pick
 from ..billing.service import NEEDS_PAYMENT, BillingService
 from ..db.repo import FINISH_MARKER
 from ..llm.client import ClaudeClient
@@ -48,10 +48,12 @@ def build_dispatcher(settings, repo) -> Dispatcher:
             BufferedInputFile(buf.getvalue(), filename=f"{slug}-spec.md"),
             caption="Готово! Вот твоя spec.md 🎉")
 
-    async def send_invoice(msg: Message):
-        await msg.answer(
+    async def send_invoice(user_id: int, chat_msg: Message):
+        # user_id MUST be the paying user (never a message author — cq.message is authored
+        # by the bot), so the invoice payload binds to them and crediting succeeds.
+        await chat_msg.answer(
             "Бесплатный прогон использован. Чтобы начать новый — оплати звёздами Telegram:")
-        await msg.answer_invoice(**billing.invoice_params(msg.from_user.id))
+        await chat_msg.answer_invoice(**billing.invoice_params(user_id))
 
     @dp.message(Command("start"))
     async def on_start(msg: Message):
@@ -77,18 +79,21 @@ def build_dispatcher(settings, repo) -> Dispatcher:
         if version not in VERSION_NAMES:
             await cq.answer("Неизвестная версия")
             return
-        if await orch.resume(cq.from_user.id):
+
+        async def on_greet(_session):
+            await cq.message.answer(
+                f"Версия: {VERSION_NAMES[version]}. Расскажи свою идею — с чего начнём?",
+                reply_markup=nav_keyboard())
+
+        async def on_exists():
             await cq.answer("У тебя уже есть активная сессия — /reset чтобы начать заново")
-            return
-        result = await billing.start_session(cq.from_user.id, slug=f"product-{cq.from_user.id}",
-                                             version=version)
-        if result is NEEDS_PAYMENT:
-            await send_invoice(cq.message)
-            await cq.answer()
-            return
-        await cq.message.answer(
-            f"Версия: {VERSION_NAMES[version]}. Расскажи свою идею — с чего начнём?",
-            reply_markup=nav_keyboard())
+
+        await handle_version_pick(
+            user_id=cq.from_user.id, version=version, orch=orch, billing=billing,
+            on_greet=on_greet,
+            on_needs_payment=lambda: send_invoice(cq.from_user.id, cq.message),
+            on_exists=on_exists,
+        )
         await cq.answer()
 
     @dp.message(Command("reset"))
@@ -124,7 +129,9 @@ def build_dispatcher(settings, repo) -> Dispatcher:
 
     @dp.pre_checkout_query()
     async def on_pre_checkout(pcq: PreCheckoutQuery):
-        ok = pcq.currency == "XTR" and pcq.total_amount == settings.stars_price
+        # fail-closed BEFORE the user is charged: validate currency/amount/payload-binding
+        ok = billing.validate_payment(pcq.from_user.id, pcq.currency, pcq.total_amount,
+                                      pcq.invoice_payload)
         await pcq.answer(ok=ok, error_message=None if ok else "Некорректный платёж")
 
     @dp.message(F.successful_payment)

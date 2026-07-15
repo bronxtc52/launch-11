@@ -1,5 +1,5 @@
 """Phase 3 — billing gate before Claude (criterion 5)."""
-from launch11bot.app.turn import handle_incoming
+from launch11bot.app.turn import handle_incoming, handle_version_pick
 from launch11bot.billing.service import BillingService
 from launch11bot.llm.client import Turn
 
@@ -53,3 +53,38 @@ async def test_free_run_proceeds_to_claude(orch, repo):
     )
     assert fake.calls == 1
     assert (await repo.get_billing(6))["free_used"] == 1
+
+
+async def test_version_pick_grants_free_run(orch, repo):
+    billing = BillingService(repo, free_runs=1, stars_price=100, stars_label="Прогон")
+    greeted = []
+
+    async def on_greet(s):
+        greeted.append(s)
+
+    async def boom():
+        raise AssertionError("should not need payment / already exist")
+
+    await handle_version_pick(user_id=8, version="full", orch=orch, billing=billing,
+                              on_greet=on_greet, on_needs_payment=boom, on_exists=boom)
+    assert len(greeted) == 1
+    assert greeted[0].version == "full" and greeted[0].current_step == "F1"
+    assert (await repo.get_billing(8))["free_used"] == 1
+
+
+async def test_version_pick_needs_payment_after_free_used(orch, repo):
+    billing = BillingService(repo, free_runs=1, stars_price=100, stars_label="Прогон")
+    await billing.start_session(9, slug="a", version="lite")  # burn free run
+    await repo.delete_session(9)
+    invoiced = []
+
+    async def on_needs_payment():
+        invoiced.append(9)  # bot.py binds the invoice to this (clicking) user id
+
+    async def boom(*a):
+        raise AssertionError("unexpected")
+
+    await handle_version_pick(user_id=9, version="full", orch=orch, billing=billing,
+                              on_greet=boom, on_needs_payment=on_needs_payment, on_exists=boom)
+    assert invoiced == [9]
+    assert (await repo.get_billing(9))["free_used"] == 1  # no extra consume on a denied pick

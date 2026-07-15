@@ -36,6 +36,23 @@ async def handle_incoming(
     )
 
 
+async def handle_version_pick(
+    *, user_id, version, orch, billing, on_greet, on_needs_payment, on_exists,
+):
+    """Button path: create a session for the chosen version through the billing gate.
+    Uses the CLICKING user's id (never a message author) so the invoice payload binds
+    to the right user (regression guard for the on_pick_version invoice bug)."""
+    if await orch.resume(user_id):
+        await on_exists()
+        return None
+    result = await billing.start_session(user_id, slug=f"product-{user_id}", version=version)
+    if result is NEEDS_PAYMENT:
+        await on_needs_payment()
+        return None
+    await on_greet(result)
+    return result
+
+
 async def run_user_turn(
     *, orch, claude, repo, settings, session, user_text,
     on_text, on_document, on_notice,

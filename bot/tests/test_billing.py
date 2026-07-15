@@ -29,7 +29,7 @@ async def test_paid_credit_grants_and_is_consumed(billing, repo):
     await billing.start_session(1, slug="a", version="lite")
     await repo.delete_session(1)
     granted = await billing.on_successful_payment(1, charge_id="ch1", currency="XTR",
-                                                  total_amount=100)
+                                                  total_amount=100, invoice_payload="run:1")
     assert granted is True
     assert (await repo.get_billing(1))["paid_credits"] == 1
     session = await billing.start_session(1, slug="b", version="lite")
@@ -38,15 +38,15 @@ async def test_paid_credit_grants_and_is_consumed(billing, repo):
 
 
 async def test_duplicate_payment_not_credited_twice(billing, repo):
-    g1 = await billing.on_successful_payment(1, charge_id="ch1", currency="XTR", total_amount=100)
-    g2 = await billing.on_successful_payment(1, charge_id="ch1", currency="XTR", total_amount=100)
+    g1 = await billing.on_successful_payment(1, "ch1", "XTR", 100, invoice_payload="run:1")
+    g2 = await billing.on_successful_payment(1, "ch1", "XTR", 100, invoice_payload="run:1")
     assert g1 is True and g2 is False
     assert (await repo.get_billing(1))["paid_credits"] == 1  # not 2
 
 
 async def test_wrong_currency_or_amount_not_credited(billing, repo):
-    bad_cur = await billing.on_successful_payment(1, charge_id="c2", currency="USD", total_amount=100)
-    bad_amt = await billing.on_successful_payment(1, charge_id="c3", currency="XTR", total_amount=5)
+    bad_cur = await billing.on_successful_payment(1, "c2", "USD", 100, invoice_payload="run:1")
+    bad_amt = await billing.on_successful_payment(1, "c3", "XTR", 5, invoice_payload="run:1")
     assert bad_cur is False and bad_amt is False
     assert (await repo.get_billing(1))["paid_credits"] == 0
 
@@ -65,6 +65,13 @@ async def test_resume_does_not_consume(billing, repo):
     again = await billing.start_session(1, slug="a", version="lite")
     assert again is not NEEDS_PAYMENT
     assert (await repo.get_billing(1))["free_used"] == 1  # still 1, not 2
+
+
+def test_validate_payment(billing):
+    assert billing.validate_payment(7, "XTR", 100, "run:7") is True
+    assert billing.validate_payment(7, "USD", 100, "run:7") is False   # wrong currency
+    assert billing.validate_payment(7, "XTR", 5, "run:7") is False     # wrong amount
+    assert billing.validate_payment(7, "XTR", 100, "run:999") is False  # bound to another user
 
 
 def test_invoice_params_xtr(billing):
