@@ -12,6 +12,7 @@ class InMemoryRepo:
         self._sessions: dict[int, Session] = {}          # id -> Session
         self._artifacts: dict[int, dict[str, str]] = {}   # session_id -> {step_id: md}
         self._messages: dict[int, list[tuple[str, str]]] = {}
+        self._adrs: dict[int, list[dict]] = {}
         self._seq = 0
         self._lock = asyncio.Lock()
 
@@ -65,6 +66,22 @@ class InMemoryRepo:
         if s:
             s.status = status
 
+    async def set_version(self, session_id: int, version: str, first_step: str) -> None:
+        s = self._sessions.get(session_id)
+        if s:
+            s.version = version
+            s.current_step = first_step
+
+    async def create_adr(self, session_id: int, title: str, markdown: str) -> int:
+        async with self._lock:
+            lst = self._adrs.setdefault(session_id, [])
+            n = len(lst) + 1
+            lst.append({"n": n, "title": title, "markdown": markdown})
+            return n
+
+    async def get_adrs(self, session_id: int) -> list[dict]:
+        return [dict(a) for a in self._adrs.get(session_id, [])]
+
     async def set_current_step(self, session_id: int, step_id: str) -> None:
         s = self._sessions.get(session_id)
         if s:
@@ -82,3 +99,4 @@ class InMemoryRepo:
                 self._sessions.pop(sid, None)
                 self._artifacts.pop(sid, None)
                 self._messages.pop(sid, None)
+                self._adrs.pop(sid, None)

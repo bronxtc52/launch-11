@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 from .orchestrator import Orchestrator, StepError
 
-ALLOWED_VERSIONS_PHASE1 = {"lite"}
+ALLOWED_VERSIONS = {"lite", "full", "spec_only"}
 
 
 @dataclass
@@ -33,9 +33,18 @@ async def dispatch(orch: Orchestrator, session, tool_name: str, tool_input: dict
 
         if tool_name == "set_version":
             version = tool_input.get("version")
-            if version not in ALLOWED_VERSIONS_PHASE1:
-                return ToolResult(False, f"версия '{version}' недоступна в этой фазе", session)
+            if version not in ALLOWED_VERSIONS:
+                return ToolResult(False, f"неизвестная версия: {version}", session)
+            session = await orch.set_version(session, version)
             return ToolResult(True, f"версия: {version}", session)
+
+        if tool_name == "create_adr":
+            title = tool_input.get("title")
+            markdown = tool_input.get("markdown")
+            if not isinstance(title, str) or not isinstance(markdown, str):
+                return ToolResult(False, "create_adr: нужны title и markdown", session)
+            n = await orch.create_adr(session, title, markdown)
+            return ToolResult(True, f"✅ ADR-{n} зафиксирован: {title}", session)
 
         if tool_name == "finish":
             spec = await orch.finish(session)

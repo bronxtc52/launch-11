@@ -22,9 +22,10 @@ class Orchestrator:
         self.repo = repo
         self.settings = settings
 
-    async def start(self, tg_user_id: int, idea_slug: str | None = None) -> Session:
+    async def start(self, tg_user_id: int, idea_slug: str | None = None,
+                    version: str = "lite") -> Session:
         slug = _slugify(idea_slug) if idea_slug else f"product-{tg_user_id}"
-        return await self.repo.start_session(tg_user_id, slug, "lite")
+        return await self.repo.start_session(tg_user_id, slug, version)
 
     async def resume(self, tg_user_id: int) -> Session | None:
         return await self.repo.get_active_session(tg_user_id)
@@ -58,6 +59,25 @@ class Orchestrator:
             await self.repo.save_artifact(session.id, step_id, markdown)
         return session
 
+    async def set_version(self, session: Session, version: str) -> Session:
+        if version not in steps.PIPELINES:
+            raise StepError(f"неизвестная версия: {version}")
+        arts = await self.repo.get_artifacts(session.id)
+        if arts:
+            raise StepError("нельзя сменить версию — уже есть сохранённые артефакты")
+        first = steps.first_step_id(version)
+        await self.repo.set_version(session.id, version, first)
+        session.version = version
+        session.current_step = first
+        return session
+
+    async def create_adr(self, session: Session, title: str, markdown: str) -> int:
+        if not title or not markdown:
+            raise StepError("ADR требует title и markdown")
+        if len(markdown.encode("utf-8")) > self.settings.max_artifact_bytes:
+            raise StepError("ADR слишком большой")
+        return await self.repo.create_adr(session.id, title, markdown)
+
     async def can_finish(self, session: Session) -> bool:
         arts = await self.repo.get_artifacts(session.id)
         return set(steps.step_ids(session.version)).issubset(arts.keys())
@@ -68,7 +88,8 @@ class Orchestrator:
         if not await self.can_finish(session):
             raise StepError("пайплайн не завершён — не все шаги заполнены")
         arts = await self.repo.get_artifacts(session.id)
-        spec = assemble.assemble_spec(session.slug, session.version, arts)
+        adrs = await self.repo.get_adrs(session.id)
+        spec = assemble.assemble_spec(session.slug, session.version, arts, adrs)
         await self.repo.set_status(session.id, "finished")
         session.status = "finished"
         return spec

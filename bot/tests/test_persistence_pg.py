@@ -16,7 +16,7 @@ async def _fresh_pool():
     async with pool.acquire() as con:
         # clean slate — drop the migrations ledger too, else apply_migrations skips rebuild
         await con.execute(
-            "DROP TABLE IF EXISTS messages, artifacts, sessions, schema_migrations CASCADE"
+            "DROP TABLE IF EXISTS adrs, messages, artifacts, sessions, schema_migrations CASCADE"
         )
     await apply_migrations(pool)
     return pool
@@ -59,6 +59,27 @@ async def test_save_and_advance_is_atomic():
         assert again.current_step == "L2"
         arts = await repo.get_artifacts(s.id)
         assert arts["L1"] == "body2"
+    finally:
+        await pool.close()
+
+
+async def test_adrs_persist_across_reconnect():
+    from launch11bot.db.pg_repo import PgRepo
+    pool = await _fresh_pool()
+    try:
+        repo1 = PgRepo(pool)
+        s = await repo1.start_session(999, "idea", "full")
+        assert await repo1.create_adr(s.id, "БД", "Postgres") == 1
+        assert await repo1.create_adr(s.id, "auth", "JWT") == 2
+        pool2 = await __import__("asyncpg").create_pool(DSN)
+        try:
+            repo2 = PgRepo(pool2)
+            again = await repo2.get_active_session(999)
+            adrs = await repo2.get_adrs(again.id)
+            assert [a["n"] for a in adrs] == [1, 2]
+            assert adrs[0]["title"] == "БД"
+        finally:
+            await pool2.close()
     finally:
         await pool.close()
 

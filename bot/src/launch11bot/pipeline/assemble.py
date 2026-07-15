@@ -4,7 +4,8 @@ from __future__ import annotations
 from . import steps
 
 
-def assemble_spec(slug: str, version: str, artifacts: dict[str, str]) -> str:
+def assemble_spec(slug: str, version: str, artifacts: dict[str, str],
+                  adrs: list[dict] | None = None) -> str:
     parts: list[str] = [f"# {slug} — Product Spec", ""]
     parts.append(f"_Сгенерировано ботом launch-11 (пайплайн Сейсембая, версия: {version})._")
     parts.append("")
@@ -16,4 +17,12 @@ def assemble_spec(slug: str, version: str, artifacts: dict[str, str]) -> str:
         parts.append("")
         parts.append(body.strip())
         parts.append("")
+    if adrs:
+        parts.append("## Решения (ADR)")
+        parts.append("")
+        for adr in adrs:
+            parts.append(f"### ADR-{adr['n']}: {adr['title']}")
+            parts.append("")
+            parts.append(adr["markdown"].strip())
+            parts.append("")
     return "\n".join(parts).rstrip() + "\n"
