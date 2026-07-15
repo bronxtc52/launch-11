@@ -1,5 +1,6 @@
-"""app.turn service — gate (criterion 9), tool loop, history validity."""
+"""app.turn service — beta gate, billing gate, tool loop, history validity."""
 from launch11bot.app.turn import handle_incoming
+from launch11bot.billing.service import BillingService
 from launch11bot.llm.client import Turn
 
 
@@ -19,7 +20,12 @@ async def _noop(*a):
     pass
 
 
-async def test_denied_user_does_not_call_claude(orch, repo):
+def _billing(repo):
+    return BillingService(repo, free_runs=1, stars_price=100, stars_label="Прогон")
+
+
+async def test_beta_allowlist_blocks_claude(orch, repo):
+    orch.settings.beta_allowlist = {1}  # only user 1 allowed during beta
     fake = FakeClaude([Turn(text="should not run")])
     denied = []
 
@@ -27,11 +33,11 @@ async def test_denied_user_does_not_call_claude(orch, repo):
         denied.append(1)
 
     res = await handle_incoming(
-        user_id=999, text="hi", allowed={1}, orch=orch, claude=fake, repo=repo,
+        user_id=999, text="hi", orch=orch, billing=_billing(repo), claude=fake, repo=repo,
         settings=orch.settings, on_text=_noop, on_document=_noop, on_notice=_noop,
-        on_denied=on_denied,
+        on_needs_payment=_noop, on_denied=on_denied,
     )
-    assert fake.calls == 0          # criterion 9: Claude never invoked for denied user
+    assert fake.calls == 0
     assert denied == [1]
     assert res is None
 
@@ -43,7 +49,7 @@ async def test_full_loop_confirms_each_step_and_delivers_document(orch, repo):
     script.append(Turn(tool_calls=[("tf", "finish", {})]))
     script.append(Turn(text="готово"))
     fake = FakeClaude(script)
-    notices, docs, texts = [], [], []
+    notices, docs = [], []
 
     async def on_notice(m):
         notices.append(m)
@@ -51,18 +57,15 @@ async def test_full_loop_confirms_each_step_and_delivers_document(orch, repo):
     async def on_document(slug, spec):
         docs.append((slug, spec))
 
-    async def on_text(t):
-        texts.append(t)
-
     await handle_incoming(
-        user_id=7, text="партнёрский портал", allowed={7}, orch=orch, claude=fake, repo=repo,
-        settings=orch.settings, on_text=on_text, on_document=on_document, on_notice=on_notice,
-        on_denied=_noop,
+        user_id=7, text="партнёрский портал", orch=orch, billing=_billing(repo), claude=fake,
+        repo=repo, settings=orch.settings, on_text=_noop, on_document=on_document,
+        on_notice=on_notice, on_needs_payment=_noop, on_denied=_noop,
     )
-    assert len(notices) == 4                         # ✅ confirmation per saved step
-    assert len(docs) == 1                            # spec.md delivered once
+    assert len(notices) == 4
+    assert len(docs) == 1
     slug, spec = docs[0]
-    assert slug == "партнёрский-портал" or "портал" in slug  # slug from the user's idea
+    assert "портал" in slug
     assert "L4" in spec
 
 
@@ -72,8 +75,9 @@ async def test_history_passed_to_claude_is_valid(orch, repo):
         await repo.add_message(s.id, "user" if i % 2 == 0 else "assistant", f"m{i}")
     fake = FakeClaude([Turn(text="ok")])
     await handle_incoming(
-        user_id=5, text="next", allowed={5}, orch=orch, claude=fake, repo=repo,
-        settings=orch.settings, on_text=_noop, on_document=_noop, on_notice=_noop, on_denied=_noop,
+        user_id=5, text="next", orch=orch, billing=_billing(repo), claude=fake, repo=repo,
+        settings=orch.settings, on_text=_noop, on_document=_noop, on_notice=_noop,
+        on_needs_payment=_noop, on_denied=_noop,
     )
     h = fake.last_history
     assert h[0]["role"] == "user"

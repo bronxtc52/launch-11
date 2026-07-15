@@ -84,6 +84,45 @@ async def test_adrs_persist_across_reconnect():
         await pool.close()
 
 
+async def test_billing_persists_and_payment_idempotent():
+    from launch11bot.db.pg_repo import PgRepo
+    pool = await _fresh_pool()
+    try:
+        repo1 = PgRepo(pool)
+        s = await repo1.start_session_with_entitlement(444, "idea", "lite", free_runs=1)
+        assert s is not None
+        assert await repo1.grant_paid_credit("ch1", 444, 100) is True
+        assert await repo1.grant_paid_credit("ch1", 444, 100) is False  # idempotent
+        pool2 = await __import__("asyncpg").create_pool(DSN)
+        try:
+            repo2 = PgRepo(pool2)
+            b = await repo2.get_billing(444)
+            assert b["free_used"] == 1 and b["paid_credits"] == 1
+        finally:
+            await pool2.close()
+    finally:
+        await pool.close()
+
+
+async def test_concurrent_start_consumes_one_entitlement():
+    from launch11bot.db.pg_repo import PgRepo
+    pool = await _fresh_pool()
+    try:
+        repo = PgRepo(pool)
+        results = await asyncio.gather(
+            *[repo.start_session_with_entitlement(666, "idea", "lite", free_runs=1)
+              for _ in range(8)],
+            return_exceptions=True,
+        )
+        sessions = [r for r in results if not isinstance(r, Exception) and r is not None]
+        ids = {s.id for s in sessions}
+        assert len(ids) == 1, f"expected one session, got {ids}"
+        b = await repo.get_billing(666)
+        assert b["free_used"] == 1, f"expected exactly one consume, got {b}"
+    finally:
+        await pool.close()
+
+
 async def test_concurrent_start_yields_single_active_session():
     from launch11bot.db.pg_repo import PgRepo
     pool = await _fresh_pool()
