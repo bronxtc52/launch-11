@@ -13,6 +13,7 @@ from . import tools
 @dataclass
 class Turn:
     text: str = ""                                   # assistant prose to show the user
+    stop_reason: str | None = None                   # "max_tokens" => the answer is CUT OFF
     tool_calls: list[tuple[str, str, dict]] = field(default_factory=list)  # (id, name, input)
     raw_assistant: list = field(default_factory=list)  # assistant content blocks (for tool loop)
 
@@ -30,14 +31,15 @@ class ClaudeClient:
                 resp = await asyncio.wait_for(
                     self._client.messages.create(
                         model=self.settings.launch11_model,
-                        max_tokens=2000,
+                        max_tokens=self.settings.claude_max_tokens,
                         system=system,
                         tools=tools.tool_defs(version),
                         messages=history,
                     ),
                     timeout=self.settings.claude_timeout_s,
                 )
-                out = Turn(raw_assistant=resp.content)
+                out = Turn(raw_assistant=resp.content,
+                           stop_reason=getattr(resp, 'stop_reason', None))
                 for block in resp.content:
                     if block.type == "text":
                         out.text += block.text

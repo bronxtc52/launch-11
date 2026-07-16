@@ -12,9 +12,9 @@ from __future__ import annotations
 import re
 
 MAX_QUESTION_LEN = 400
-MAX_PREAMBLE_LEN = 600      # a real formulation must fit; 200 forced the model to drop it
-MAX_RENDERED_LEN = 1000
-MAX_PREAMBLE_SENTENCES = 6  # context is legitimate, it is not a dump
+MAX_PREAMBLE_LEN = 1200     # live: the model kept hitting 600 while presenting real content
+MAX_RENDERED_LEN = 1800
+MAX_PREAMBLE_SENTENCES = 12 # context is legitimate; the one-question rule is what we enforce
 MAX_QUESTION_SENTENCES = 3
 
 # list markers: at line start OR inline ("… ответь: 1) кто клиент; 2) какая боль")

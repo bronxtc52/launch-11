@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     max_context_messages: int = 40
     max_artifact_bytes: int = 20_000
     max_session_artifact_bytes: int = 200_000
+    # 2000 truncated real L4 artifacts mid-sentence: the model never reached its
+    # ask_question call and the human was left with a stump and no question.
+    claude_max_tokens: int = 8000
     claude_timeout_s: float = 90.0
     claude_max_retries: int = 2
 

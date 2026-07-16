@@ -6,6 +6,7 @@ from launch11bot.pipeline.orchestrator import Orchestrator
 class FakeSettings:
     def __init__(self):
         self.max_context_messages = 40
+        self.claude_max_tokens = 8000
         self.max_artifact_bytes = 20000
         self.max_session_artifact_bytes = 200000
         self.allowed_user_ids = {424242}

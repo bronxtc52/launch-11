@@ -24,6 +24,12 @@ CONTRACT_CORRECTION = (
     "человек должен видеть то, о чём его спрашивают."
 )
 FALLBACK_NUDGE = "Давай по порядку. Расскажи, пожалуйста, подробнее — с чего начнём?"
+TRUNCATION_CORRECTION = (
+    "Твой предыдущий ответ обрезало по лимиту токенов — человек его не увидит. Уложись "
+    "короче: главное — тезисно, длинное содержимое сохраняй в артефакт через save_artifact, "
+    "а человеку задай ОДИН вопрос через ask_question."
+)
+STRANDED_NUDGE = "Что скажешь — подтверждаешь, или что-то поправим?"
 MOVING_ON = (
     "Понял, идём дальше — запишу по тому, что есть, и помечу как неполное. "
     "Захочешь вернуться и уточнить — просто скажи."
@@ -112,10 +118,14 @@ async def run_user_turn(
     # assessment is owed only while a question is open
     assessed = session.current_question is None
     contract_retry_left = 1
+    truncation_retry_left = 1
+    asked_something = False
     # was the PREVIOUS reply already judged offtopic? then we're looping — break it out
     prev_verdict = session.last_verdict
 
     async def send_question(text: str):
+        nonlocal asked_something
+        asked_something = True
         """Every question the user sees MUST also land in the transcript — otherwise the
         next reply becomes a second consecutive `user` row, normalize_history coalesces
         them, and the model never learns it already re-asked (the endless-repeat loop)."""
@@ -126,6 +136,18 @@ async def run_user_turn(
         system = build_system(session, last_user_text=user_text)
         turn = await claude.turn(system, history, session.version)
         has_ask = any(n == "ask_question" for _, n, _ in turn.tool_calls)
+
+        # A truncated answer is not an answer: max_tokens cut the model off mid-generation,
+        # so it never reached its ask_question call. Forwarding the stump strands the human.
+        if turn.stop_reason == "max_tokens":
+            log.warning("model output truncated (max_tokens): %.60r", turn.text)
+            if truncation_retry_left > 0:
+                truncation_retry_left -= 1
+                history.append({"role": "assistant", "content": turn.text or "(пусто)"})
+                history.append({"role": "user", "content": TRUNCATION_CORRECTION})
+                continue
+            await send_question(FALLBACK_NUDGE)
+            break
 
         # Inspect the WHOLE response before sending anything (council architect-2).
         # A violation is prose that carries a question or a list — checked mechanically
@@ -216,6 +238,11 @@ async def run_user_turn(
             await send_question(f"{OFFTOPIC_PREFIX}\n\n{session.current_question}")
         else:
             await send_question(FALLBACK_NUDGE)
+    elif not asked_something and session.status == "active" and not session.current_question:
+        # The bot spoke but asked nothing: the human is staring at a wall of text with no idea
+        # what is wanted. Silence is not the only way to strand someone.
+        log.warning("stranded user averted: spoke without asking, step=%s", session.current_step)
+        await send_question(STRANDED_NUDGE)
 
     # Persist ONE assistant message for the whole turn so the stored transcript
     # stays strictly alternating user/assistant (review finding #1).
