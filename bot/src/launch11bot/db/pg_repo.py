@@ -6,7 +6,10 @@ from pathlib import Path
 from ..pipeline import steps
 from .repo import Session
 
-MIGRATIONS_DIR = Path(__file__).resolve().parents[3] / "db" / "migrations"
+# Migrations ship as package data, so this resolves correctly both from the repo and
+# from an installed wheel (site-packages) — a repo-relative path silently found zero
+# files inside the container and left the schema uncreated.
+MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 
 
 async def apply_migrations(pool) -> None:
