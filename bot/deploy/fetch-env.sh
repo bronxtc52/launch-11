@@ -24,6 +24,7 @@ get() { az keyvault secret show --vault-name "$VAULT" --name "launch11--${ENVNS}
   # owners: unlimited runs, never billed, never beta-gated
   echo "OWNER_IDS=$(get OWNER-IDS)"
   echo "DATABASE_URL=${DATABASE_URL:-postgresql://launch11:launch11@localhost:5432/launch11}"
+  echo "SENTRY_DSN=$(get SENTRY-DSN)"
   echo "LAUNCH11_MODEL=${LAUNCH11_MODEL:-claude-sonnet-5}"
   echo "FREE_RUNS=${FREE_RUNS:-1}"
   echo "STARS_PRICE=${STARS_PRICE:-100}"
