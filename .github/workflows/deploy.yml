@@ -1,0 +1,123 @@
+name: deploy
+
+# Prod deploys go through CI + OIDC only — never by hand from a shared VM
+# (rule: ~/.claude/rules/deploy-via-ci.md). mh-central's managed identity is read-only
+# on project RGs by design, so this workflow is the ONLY sanctioned deploy path.
+
+on:
+  push:
+    branches: [main]
+    paths: ["bot/**", ".github/workflows/deploy.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+permissions:
+  id-token: write   # OIDC federated credential — no SP secrets in the repo
+  contents: read
+
+env:
+  RG: rg-launch11-prod
+  ACR: acrlaunch11prod
+  APP: ca-launch11-bot
+  ENVIRONMENT: cae-launch11-prod
+  KV: kv-bronxtc-dev
+  IMAGE: launch11-bot
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build image in ACR
+        run: |
+          az acr build -r "$ACR" -t "$IMAGE:${GITHUB_SHA::7}" -t "$IMAGE:latest" ./bot
+
+      - name: Resolve app identity
+        id: ids
+        run: |
+          UAMI=$(az identity show -n id-launch11 -g "$RG" --query id -o tsv)
+          echo "uami=$UAMI" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update the Container App
+        env:
+          UAMI: ${{ steps.ids.outputs.uami }}
+        run: |
+          set -euo pipefail
+          IMG="$ACR.azurecr.io/$IMAGE:${GITHUB_SHA::7}"
+          KVURL="https://$KV.vault.azure.net/secrets"
+          # secrets come from Key Vault by reference — never inlined into the app
+          SECRETS=(
+            "bot-token=keyvaultref:$KVURL/launch11--production--BOT-TOKEN,identityref:$UAMI"
+            "anthropic-key=keyvaultref:$KVURL/launch11--production--ANTHROPIC-API-KEY,identityref:$UAMI"
+            "database-url=keyvaultref:$KVURL/launch11--production--DATABASE-URL,identityref:$UAMI"
+            "sentry-dsn=keyvaultref:$KVURL/launch11--production--SENTRY-DSN,identityref:$UAMI"
+            "owner-ids=keyvaultref:$KVURL/launch11--production--OWNER-IDS,identityref:$UAMI"
+            "beta-ids=keyvaultref:$KVURL/launch11--production--BETA-ALLOWLIST-IDS,identityref:$UAMI"
+          )
+          ENVVARS=(
+            "LAUNCH11_BOT_TOKEN=secretref:bot-token"
+            "ANTHROPIC_API_KEY=secretref:anthropic-key"
+            "DATABASE_URL=secretref:database-url"
+            "SENTRY_DSN=secretref:sentry-dsn"
+            "OWNER_IDS=secretref:owner-ids"
+            "BETA_ALLOWLIST_IDS=secretref:beta-ids"
+            "LAUNCH11_MODEL=claude-sonnet-5"
+            "GIT_SHA=${GITHUB_SHA}"
+          )
+
+          if az containerapp show -n "$APP" -g "$RG" >/dev/null 2>&1; then
+            az containerapp secret set -n "$APP" -g "$RG" --secrets "${SECRETS[@]}" -o none
+            az containerapp update -n "$APP" -g "$RG" \
+              --image "$IMG" \
+              --revision-suffix "sha-${GITHUB_SHA::7}" \
+              --set-env-vars "${ENVVARS[@]}" -o none
+          else
+            # long-polling worker: NO ingress, single replica.
+            # ingress here would attach a startup probe to a port nobody listens on ->
+            # ActivationFailed crash-loop; two replicas would fight over getUpdates (409).
+            az containerapp create -n "$APP" -g "$RG" \
+              --environment "$ENVIRONMENT" \
+              --image "$IMG" \
+              --registry-server "$ACR.azurecr.io" --registry-identity "$UAMI" \
+              --user-assigned "$UAMI" \
+              --min-replicas 1 --max-replicas 1 \
+              --cpu 0.5 --memory 1.0Gi \
+              --secrets "${SECRETS[@]}" \
+              --env-vars "${ENVVARS[@]}" -o none
+          fi
+
+      - name: Smoke — the new revision must actually serve (pushed != deployed)
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            STATE=$(az containerapp revision list -n "$APP" -g "$RG" \
+              --query "[?properties.active].{h:properties.healthState,r:properties.runningState,t:properties.trafficWeight}" -o tsv)
+            echo "revision: $STATE"
+            echo "$STATE" | grep -qE "Healthy.*Running" && exit 0
+            sleep 10
+          done
+          echo "::error::new revision never became Healthy/Running — check logs"
+          az containerapp logs show -n "$APP" -g "$RG" --tail 50 || true
+          exit 1
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          PREV=$(az containerapp revision list -n "$APP" -g "$RG" \
+            --query "sort_by([?properties.active], &properties.createdTime)[-2].name" -o tsv 2>/dev/null || true)
+          if [ -n "$PREV" ]; then
+            echo "::warning::rolling back to $PREV"
+            az containerapp ingress traffic set -n "$APP" -g "$RG" --revision-weight "$PREV=100" -o none || true
+          fi

@@ -52,7 +52,9 @@ def scrub_event(event: dict, hint) -> dict:
 
 
 def init_sentry(dsn: str, release: str | None = None) -> None:
-    if not dsn:
+    # a missing/placeholder DSN must never take the bot down — Sentry is observability,
+    # not a runtime dependency (keyvaultref always delivers *something*)
+    if not dsn or not dsn.startswith("http"):
         return
     import sentry_sdk
 
