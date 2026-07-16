@@ -18,10 +18,14 @@ log = logging.getLogger(__name__)
 MAX_TOOL_ITERS = 6
 
 CONTRACT_CORRECTION = (
-    "СТОП. Вопросы задаются ТОЛЬКО через ask_question, ровно по одному. НО контекст терять "
-    "нельзя: ПЕРЕНЕСИ весь свой текст (формулировку, варианты, пояснение) в поле preamble "
-    "вызова ask_question, а в question оставь ОДИН вопрос. Не выбрасывай содержание — "
-    "человек должен видеть то, о чём его спрашивают."
+    "СТОП. Вопросы задаются ТОЛЬКО через ask_question, ровно по одному. НО содержание терять "
+    "нельзя — сохрани его ЦЕЛИКОМ, ничего не сокращая:\n"
+    "• длинный контент (формулировки, списки задач с DoD, варианты) — оставь ОБЫЧНЫМ ТЕКСТОМ "
+    "в ответе, без единого знака «?». Длина текста НЕ ограничена;\n"
+    "• в preamble вызова ask_question — только короткая подводка (или ничего);\n"
+    "• в question — ОДИН вопрос.\n"
+    "Не ужимай содержание в preamble и не пиши «кратко» — человек должен видеть полное "
+    "содержание того, о чём его спрашивают."
 )
 FALLBACK_NUDGE = "Давай по порядку. Расскажи, пожалуйста, подробнее — с чего начнём?"
 TRUNCATION_CORRECTION = (
@@ -124,11 +128,11 @@ async def run_user_turn(
     prev_verdict = session.last_verdict
 
     async def send_question(text: str):
-        nonlocal asked_something
-        asked_something = True
         """Every question the user sees MUST also land in the transcript — otherwise the
         next reply becomes a second consecutive `user` row, normalize_history coalesces
         them, and the model never learns it already re-asked (the endless-repeat loop)."""
+        nonlocal asked_something
+        asked_something = True
         await on_question(text)
         assistant_texts.append(text)
 
