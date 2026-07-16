@@ -12,9 +12,9 @@ from __future__ import annotations
 import re
 
 MAX_QUESTION_LEN = 400
-MAX_PREAMBLE_LEN = 200
-MAX_RENDERED_LEN = 600
-MAX_PREAMBLE_SENTENCES = 2
+MAX_PREAMBLE_LEN = 600      # a real formulation must fit; 200 forced the model to drop it
+MAX_RENDERED_LEN = 1000
+MAX_PREAMBLE_SENTENCES = 6  # context is legitimate, it is not a dump
 MAX_QUESTION_SENTENCES = 3
 
 # list markers: at line start OR inline ("… ответь: 1) кто клиент; 2) какая боль")
@@ -37,16 +37,36 @@ def _list_like(text: str) -> bool:
     return bool(_LIST_MARKER.search(text)) or text.count(";") >= 2
 
 
+# Asking without a question mark is still asking. These are the imperatives the model reaches
+# for when it dumps requests as prose ("Теперь: 1. Расскажи… 2. Опиши…").
+_IMPERATIVE = re.compile(
+    r"(?im)(?:^|[\n;]|\d+[.)]\s*|[-*•]\s*)\s*"
+    r"(расскажи|опиши|назови|перечисли|укажи|уточни|дай|напиши|поясни|объясни|сформулируй|ответь)\b"
+)
+
+
+def _request_dump(text: str) -> bool:
+    """Two or more imperative requests = a dump wearing a statement's clothes.
+    A list of STATEMENTS ('- поток предсказуем') is content and must survive."""
+    return len(_IMPERATIVE.findall(text)) >= 2
+
+
 def validate_prose(text: str | None) -> str | None:
-    """Free-text the bot forwards. Must carry NO question and no list —
-    questions go through ask_question only. Clean prose is allowed through."""
+    """Free-text the bot forwards. It must carry NO question — questions go through
+    ask_question only.
+
+    Lists are NOT banned here. Banning them was over-broad: it was aimed at question-dumps
+    but it shredded legitimate content — a Northern Star formulation with an explanatory
+    bullet list got rejected, the model then dropped it, and the user was asked to confirm
+    a formulation they never saw. A list of STATEMENTS is content; only a dump of QUESTIONS
+    is the thing we ban, and the '?' rule already catches that."""
     t = normalize_marks(text).strip()
     if not t:
         return None
     if "?" in t:
         return "вопрос в свободном тексте — задавай только через ask_question"
-    if _list_like(t):
-        return "список в свободном тексте"
+    if _request_dump(t):
+        return "несколько требований подряд — это та же свалка вопросов, только без «?»"
     return None
 
 
@@ -78,8 +98,6 @@ def validate_preamble(text: str | None) -> str | None:
         return f"преамбула длиннее {MAX_PREAMBLE_LEN} символов"
     if "?" in t:
         return "вопрос в преамбуле — задавай вопрос только через поле question"
-    if _list_like(t):
-        return "список в преамбуле"
     if _sentences(t) > MAX_PREAMBLE_SENTENCES:
         return "преамбула длиннее двух предложений"
     return None
@@ -94,8 +112,6 @@ def validate_rendered(text: str | None) -> str | None:
         return f"сообщение длиннее {MAX_RENDERED_LEN} символов"
     if t.count("?") != 1:
         return "в сообщении должен быть ровно один вопрос"
-    if _list_like(t):
-        return "список вопросов вместо одного"
     return None
 
 
