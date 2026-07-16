@@ -200,6 +200,11 @@ class PgRepo:
                 "WHERE id=$1",
                 session_id, question, json.dumps(options) if options else None)
 
+    async def set_slug(self, session_id: int, slug: str) -> None:
+        async with self.pool.acquire() as con:
+            await con.execute(
+                "UPDATE sessions SET slug=$2, updated_at=now() WHERE id=$1", session_id, slug)
+
     async def set_clarify_count(self, session_id: int, n: int) -> None:
         async with self.pool.acquire() as con:
             await con.execute(

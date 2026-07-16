@@ -81,6 +81,19 @@ class Orchestrator:
             await self.repo.save_artifact(session.id, step_id, markdown)
         return session
 
+    async def set_product_name(self, session: Session, name: str) -> str:
+        """The model names the product once it knows it. The filename the human receives
+        depends on this, so junk is rejected rather than slugified into nonsense."""
+        raw = (name or "").strip()
+        if not raw or len(raw) > 120:
+            raise StepError("название продукта: 2-6 слов, коротко и по делу")
+        slug = _slugify(raw)
+        if len(slug) < 3 or slug == "product":
+            raise StepError(f"название «{raw}» не годится для имени файла — дай осмысленное")
+        await self.repo.set_slug(session.id, slug)
+        session.slug = slug
+        return slug
+
     async def ask_question(self, session: Session, question: str,
                            options: list[str] | None = None) -> str:
         """Store the ONE open question. Content is validated mechanically — a multi-question

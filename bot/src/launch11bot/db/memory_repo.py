@@ -123,6 +123,11 @@ class InMemoryRepo:
             s.current_question = question
             s.current_options = options
 
+    async def set_slug(self, session_id: int, slug: str) -> None:
+        s = self._sessions.get(session_id)
+        if s:
+            s.slug = slug
+
     async def set_clarify_count(self, session_id: int, n: int) -> None:
         s = self._sessions.get(session_id)
         if s:

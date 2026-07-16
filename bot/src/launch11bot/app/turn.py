@@ -72,7 +72,10 @@ async def handle_incoming(
     session = await orch.resume(user_id)
     if session is None:
         # consume an entitlement atomically as the session is created
-        result = await billing.start_session(user_id, slug=text, version=version)
+        # The first utterance does NOT name the product — it was often «не понял» / «да»,
+        # and that phrase then named the delivered file forever («не-понял-spec.md»).
+        # The model names it later via set_product_name, once it actually knows the product.
+        result = await billing.start_session(user_id, slug=None, version=version)
         if result is NEEDS_PAYMENT:
             await on_needs_payment()
             return None

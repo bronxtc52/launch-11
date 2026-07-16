@@ -11,6 +11,11 @@ from ..pipeline.slug import slugify
 NEEDS_PAYMENT = object()  # sentinel returned when the user must pay to start a new run
 
 
+def _slug_or_neutral(slug: str | None, user_id: int) -> str:
+    """No name yet -> a neutral placeholder. Never let a stray phrase name the product."""
+    return slugify(slug) if slug else f"product-{user_id}"
+
+
 class BillingService:
     def __init__(self, repo, free_runs: int, stars_price: int, stars_label: str,
                  owners: set[int] | None = None):
@@ -23,15 +28,15 @@ class BillingService:
     def is_owner(self, user_id: int) -> bool:
         return user_id in self.owners
 
-    async def start_session(self, user_id: int, slug: str, version: str):
+    async def start_session(self, user_id: int, slug: str | None, version: str):
         """Consume one entitlement and create the session, or return NEEDS_PAYMENT.
         Resuming an existing active session consumes nothing.
         Owners run unlimited and are never billed."""
         if self.is_owner(user_id):
             # no entitlement touched at all — never consumed, never invoiced
-            return await self.repo.start_session(user_id, slugify(slug), version)
+            return await self.repo.start_session(user_id, _slug_or_neutral(slug, user_id), version)
         session = await self.repo.start_session_with_entitlement(
-            user_id, slugify(slug), version, self.free_runs)
+            user_id, _slug_or_neutral(slug, user_id), version, self.free_runs)
         return session if session is not None else NEEDS_PAYMENT
 
     def validate_payment(self, user_id: int, currency: str, total_amount: int,

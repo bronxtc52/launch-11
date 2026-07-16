@@ -65,7 +65,10 @@ async def test_full_loop_confirms_each_step_and_delivers_document(orch, repo):
     assert len(notices) == 4
     assert len(docs) == 1
     slug, spec = docs[0]
-    assert "портал" in slug
+    # CONTRACT CHANGE: the first message no longer names the product. It used to, and that is
+    # how a real user received «не-понял-spec.md» — their first words happened to be «не понял».
+    # The model names it via set_product_name; until then the slug is neutral.
+    assert slug.startswith("product-"), "случайная первая реплика не называет продукт"
     assert "L4" in spec
 
 

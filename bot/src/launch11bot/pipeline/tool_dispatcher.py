@@ -35,6 +35,13 @@ async def dispatch(orch: Orchestrator, session, tool_name: str, tool_input: dict
             session = await orch.save_artifact(session, step_id, markdown)
             return ToolResult(True, f"✅ Шаг {step_id} зафиксирован", session)
 
+        if tool_name == "set_product_name":
+            name = tool_input.get("name")
+            if not isinstance(name, str):
+                return ToolResult(False, "set_product_name: нужен name", session)
+            slug = await orch.set_product_name(session, name)
+            return ToolResult(True, f"продукт назван: {slug}", session)
+
         if tool_name == "ask_question":
             question = tool_input.get("question")
             if not isinstance(question, str):
