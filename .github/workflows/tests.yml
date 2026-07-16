@@ -1,0 +1,47 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    # a real Postgres so the integration tests actually run: without TEST_DATABASE_URL they
+    # skip, which is how the persistence/atomicity criteria went unverified in every PR
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: t
+          POSTGRES_PASSWORD: t
+          POSTGRES_DB: t
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e ".[dev]"
+        working-directory: bot
+      - name: Tests (hermetic + Postgres integration)
+        run: python -m pytest -q
+        working-directory: bot
+        env:
+          TEST_DATABASE_URL: postgresql://t:t@localhost:5432/t
+      - name: Assert the integration tests really ran (they must not silently skip)
+        run: |
+          python -m pytest -q tests/test_persistence_pg.py 2>&1 | tee out.txt
+          grep -qE "[0-9]+ passed" out.txt || { echo "PG tests skipped!"; exit 1; }
+          grep -q "skipped" out.txt && { echo "PG tests skipped!"; exit 1; } || true
+        working-directory: bot
+        env:
+          TEST_DATABASE_URL: postgresql://t:t@localhost:5432/t

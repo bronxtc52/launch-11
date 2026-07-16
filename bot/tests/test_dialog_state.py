@@ -20,6 +20,10 @@ async def test_ask_question_stores_current_question(orch, repo):
     assert res.question == "Кто страдает без продукта?"
     assert res.terminal is True                       # criterion 12: ends the turn
     assert s.current_question == "Кто страдает без продукта?"
+    # NOTE: InMemoryRepo hands back the same Session object, so this cannot prove the
+    # storage contract — the real persistence check is test_persistence_pg.py, which now
+    # actually runs in CI (see .github/workflows/tests.yml) instead of silently skipping.
+    assert (await repo.get_active_session(1)).current_question == "Кто страдает без продукта?"
 
 
 async def test_ask_question_rejects_multi_question_dump(orch):

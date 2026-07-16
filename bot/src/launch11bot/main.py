@@ -28,6 +28,13 @@ async def _run() -> None:
 
     bot = Bot(token=settings.launch11_bot_token.get_secret_value())
     dp = build_dispatcher(settings, repo)
+    # /skip existed but was invisible — a human stuck on a question had no way to learn it
+    from aiogram.types import BotCommand
+    await bot.set_my_commands([
+        BotCommand(command="start", description="Начать / продолжить"),
+        BotCommand(command="skip", description="Пропустить текущий вопрос"),
+        BotCommand(command="reset", description="Начать заново"),
+    ])
     try:
         # long-polling: single consumer, no ingress (see docker-compose)
         await dp.start_polling(bot)

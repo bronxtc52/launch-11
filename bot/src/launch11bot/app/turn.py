@@ -59,18 +59,20 @@ STUCK_PREFIX = (
 
 
 async def _fail_closed(orch, session, text, send_question, on_text):
-    """Model kept violating the contract: NEVER forward the dump. Salvage one question."""
-    q = extract_first_question(text)
+    """Model kept violating the contract: NEVER forward the dump."""
+    if session.current_question:
+        # A question is already on the table — re-ask THAT one. Salvaging a question out of
+        # the dump here would silently swap the wording the human is looking at.
+        await send_question(f"{OFFTOPIC_PREFIX}\n\n{session.current_question}")
+        return
+    q = extract_first_question(text)  # nothing open: salvage one question from the dump
     if q and validate_question(q) is None:
         try:
             await send_question(await orch.ask_question(session, q))
             return
         except StepError:
             pass
-    if session.current_question:
-        await send_question(f"{OFFTOPIC_PREFIX}\n\n{session.current_question}")
-    else:
-        await on_text(FALLBACK_NUDGE)
+    await on_text(FALLBACK_NUDGE)
 
 
 async def run_user_turn(
@@ -154,13 +156,18 @@ async def run_user_turn(
                     stop = True
             if name == "ask_question" and res.ok and res.question:
                 await send_question(res.question)
-                stop = True  # terminal: question asked, wait for the human
             if res.ok and name in ("save_artifact", "create_adr"):
                 await on_notice(res.message)
             if res.spec:
                 await on_document(session.slug, res.spec)
             results.append({"type": "tool_result", "tool_use_id": tool_id, "content": res.message})
+            if res.terminal:  # ask_question ends the turn — wait for the human
+                stop = True
             if stop:
+                skipped = turn.tool_calls[turn.tool_calls.index((tool_id, name, args)) + 1:]
+                # every tool_use needs a tool_result or the next API call 400s
+                results.extend({"type": "tool_result", "tool_use_id": tid,
+                                "content": "пропущено: ход завершён"} for tid, _, _ in skipped)
                 break
         history.append({"role": "user", "content": results})
         if stop:
