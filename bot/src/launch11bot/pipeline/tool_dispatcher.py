@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .orchestrator import Orchestrator, StepError
+from .question import validate_preamble, validate_rendered
 
 ALLOWED_VERSIONS = {"lite", "full", "spec_only"}
 
@@ -38,9 +39,18 @@ async def dispatch(orch: Orchestrator, session, tool_name: str, tool_input: dict
             question = tool_input.get("question")
             if not isinstance(question, str):
                 return ToolResult(False, "ask_question: нужен question", session)
-            q = await orch.ask_question(session, question)   # validates content, may raise StepError
             preamble = tool_input.get("preamble")
-            rendered = f"{preamble.strip()}\n\n{q}" if isinstance(preamble, str) and preamble.strip() else q
+            pre = preamble.strip() if isinstance(preamble, str) else ""
+            # Validate EVERYTHING the user would see — the preamble was the escape hatch:
+            # the dump went there while `question` stayed innocent ("Начнём?").
+            reason = validate_preamble(pre) if pre else None
+            rendered = f"{pre}\n\n{question.strip()}" if pre else question.strip()
+            reason = reason or validate_rendered(rendered)
+            if reason:
+                return ToolResult(False, f"вопрос отклонён: {reason}. Задай РОВНО ОДИН короткий "
+                                         "вопрос в поле question, без списков и без вопросов "
+                                         "в preamble", session)
+            q = await orch.ask_question(session, question)   # validates + stores, may raise StepError
             # terminal: the question is asked, the turn ends — we wait for the human
             return ToolResult(True, "вопрос задан, ждём ответ", session,
                               question=rendered, terminal=True)

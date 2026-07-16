@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     stars_price: int = 100
     stars_label: str = "Прогон пайплайна"
     beta_allowlist_ids: str = ""  # optional rollout kill-switch; empty => billing is the only gate
+    owner_ids: str = ""           # owners: unlimited runs, never billed, never beta-gated
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -35,3 +36,7 @@ class Settings(BaseSettings):
     @property
     def beta_allowlist(self) -> set[int]:
         return parse_allowed(self.beta_allowlist_ids)
+
+    @property
+    def owners(self) -> set[int]:
+        return parse_allowed(self.owner_ids)

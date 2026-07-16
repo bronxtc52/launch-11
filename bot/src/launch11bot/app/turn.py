@@ -8,7 +8,7 @@ from ..billing.service import NEEDS_PAYMENT
 from ..llm.history import normalize_history
 from ..llm.system_prompt import build_system
 from ..pipeline.orchestrator import StepError
-from ..pipeline.question import extract_first_question, validate_question
+from ..pipeline.question import extract_first_question, validate_prose, validate_question
 from ..pipeline.tool_dispatcher import dispatch
 
 MAX_TOOL_ITERS = 6
@@ -31,8 +31,8 @@ async def handle_incoming(
     Entitlement is consumed here on the FIRST message (real work start), NOT on the
     version-pick click — clicking a version must never burn a free run (review architect-1)."""
     beta = getattr(settings, "beta_allowlist", set())
-    if beta and user_id not in beta:
-        await on_denied()
+    if beta and user_id not in beta and not billing.is_owner(user_id):
+        await on_denied()  # owners are never gated out
         return None
     session = await orch.resume(user_id)
     if session is None:
@@ -82,11 +82,11 @@ async def run_user_turn(
         turn = await claude.turn(system, history, session.version)
         has_ask = any(n == "ask_question" for _, n, _ in turn.tool_calls)
 
-        # Inspect the WHOLE response before sending anything (council architect-2):
-        # a question in free text, or prose with no action at all, breaks the contract.
-        violates = not has_ask and (
-            "?" in (turn.text or "") or bool(turn.text and not turn.tool_calls)
-        )
+        # Inspect the WHOLE response before sending anything (council architect-2).
+        # A violation is prose that carries a question or a list — checked mechanically
+        # (unicode '？' normalized). Clean prose is legitimate and passes through, even
+        # without a tool call: eating honest answers would be worse than the dump.
+        violates = not has_ask and bool(turn.text) and validate_prose(turn.text) is not None
         if violates:
             if contract_retry_left > 0:
                 contract_retry_left -= 1
@@ -96,8 +96,10 @@ async def run_user_turn(
             await _fail_closed(orch, session, turn.text, on_question, on_text)
             break
 
-        # prose is forwarded only when it carries no questions
-        if turn.text and "?" not in turn.text:
+        # prose is forwarded only if it is mechanically clean (no question, no list) —
+        # this also covers prose sent ALONGSIDE a tool call, where the dump used to slip
+        # through in imperative form
+        if turn.text and validate_prose(turn.text) is None:
             assistant_texts.append(turn.text)
             await on_text(turn.text)
         if not turn.tool_calls:

@@ -31,11 +31,14 @@ def build_dispatcher(settings, repo) -> Dispatcher:
     dp = Dispatcher()
     orch = Orchestrator(repo, settings)
     claude = ClaudeClient(settings)
-    billing = BillingService(repo, settings.free_runs, settings.stars_price, settings.stars_label)
+    billing = BillingService(repo, settings.free_runs, settings.stars_price, settings.stars_label,
+                             owners=settings.owners)
     beta = settings.beta_allowlist
     pending_version: dict[int, str] = {}  # user_id -> chosen version, until first message
 
     def gated_out(user_id: int) -> bool:
+        if billing.is_owner(user_id):
+            return False  # owners always pass
         return bool(beta) and user_id not in beta
 
     async def send_html(msg: Message, text: str, keyboard: bool = True):
