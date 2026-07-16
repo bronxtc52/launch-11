@@ -99,6 +99,19 @@ def build_dispatcher(settings, repo) -> Dispatcher:
         await repo.delete_session(msg.from_user.id)
         await msg.answer("Сессия удалена. Напиши /start, чтобы начать заново.")
 
+    @dp.message(Command("skip"))
+    async def on_skip(msg: Message):
+        # escape hatch: never trap a human inside an open question (council product_risk-5)
+        if gated_out(msg.from_user.id):
+            await msg.answer(DENIED)
+            return
+        session = await orch.resume(msg.from_user.id)
+        if not session:
+            await msg.answer("Нет активной сессии — /start")
+            return
+        await orch.skip_question(session)
+        await msg.answer("Ок, пропускаем этот вопрос. Продолжай своими словами.")
+
     @dp.callback_query(F.data == "progress")
     async def on_progress(cq: CallbackQuery):
         if gated_out(cq.from_user.id):
@@ -150,6 +163,7 @@ def build_dispatcher(settings, repo) -> Dispatcher:
                 on_text=lambda t: send_html(msg, t),
                 on_document=lambda slug, spec: send_spec(msg, slug, spec),
                 on_notice=lambda m: msg.answer(m),
+                on_question=lambda q: send_html(msg, q, keyboard=False),
                 on_needs_payment=lambda: send_invoice(msg.from_user.id, msg),
                 on_denied=lambda: msg.answer(DENIED),
             )

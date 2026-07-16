@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 
 from ..pipeline import steps
-from .repo import Session
+from .repo import VERDICTS, Session
 
 
 class InMemoryRepo:
@@ -115,6 +115,18 @@ class InMemoryRepo:
 
     async def get_billing(self, tg_user_id) -> dict:
         return dict(self._billing.get(tg_user_id, {"free_used": 0, "paid_credits": 0}))
+
+    async def set_question(self, session_id: int, question: str | None) -> None:
+        s = self._sessions.get(session_id)
+        if s:
+            s.current_question = question
+
+    async def set_verdict(self, session_id: int, verdict: str | None) -> None:
+        if verdict is not None and verdict not in VERDICTS:
+            raise ValueError(f"bad verdict: {verdict}")  # mirrors the DB CHECK constraint
+        s = self._sessions.get(session_id)
+        if s:
+            s.last_verdict = verdict
 
     async def set_current_step(self, session_id: int, step_id: str) -> None:
         s = self._sessions.get(session_id)

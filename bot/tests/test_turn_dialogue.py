@@ -86,7 +86,9 @@ async def test_order_gate_requires_assess_first(orch, repo):
     await _run(orch, repo, s, claude, on_text, on_question)
     arts = await repo.get_artifacts(s.id)
     assert "L1" not in arts               # criterion 6: not executed before assessment
-    assert claude.calls == 2              # model was re-prompted
+    # the tool-loop deliberately gives the model further calls to act after assessing,
+    # so the exact count is >=2 — what matters is that save never ran before assess
+    assert claude.calls >= 2              # model was re-prompted
 
 
 async def test_prose_dump_triggers_one_retry_then_fails_closed(orch, repo):

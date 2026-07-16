@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..pipeline import steps
-from .repo import Session
+from .repo import VERDICTS, Session
 
 # Migrations ship as package data, so this resolves correctly both from the repo and
 # from an installed wheel (site-packages) — a repo-relative path silently found zero
@@ -28,7 +28,10 @@ async def apply_migrations(pool) -> None:
 
 
 def _row_to_session(r) -> Session:
-    return Session(r["id"], r["tg_user_id"], r["slug"], r["version"], r["current_step"], r["status"])
+    # every query uses SELECT * / RETURNING *, so the dialog-state columns are present
+    return Session(r["id"], r["tg_user_id"], r["slug"], r["version"], r["current_step"],
+                   r["status"], current_question=r["current_question"],
+                   last_verdict=r["last_verdict"])
 
 
 class PgRepo:
@@ -185,6 +188,20 @@ class PgRepo:
                 "SELECT free_used, paid_credits FROM billing WHERE tg_user_id=$1", tg_user_id)
             return ({"free_used": r["free_used"], "paid_credits": r["paid_credits"]} if r
                     else {"free_used": 0, "paid_credits": 0})
+
+    async def set_question(self, session_id: int, question: str | None) -> None:
+        async with self.pool.acquire() as con:
+            await con.execute(
+                "UPDATE sessions SET current_question=$2, updated_at=now() WHERE id=$1",
+                session_id, question)
+
+    async def set_verdict(self, session_id: int, verdict: str | None) -> None:
+        if verdict is not None and verdict not in VERDICTS:
+            raise ValueError(f"bad verdict: {verdict}")
+        async with self.pool.acquire() as con:
+            await con.execute(
+                "UPDATE sessions SET last_verdict=$2, updated_at=now() WHERE id=$1",
+                session_id, verdict)
 
     async def add_message(self, session_id: int, role: str, text: str) -> None:
         async with self.pool.acquire() as con:

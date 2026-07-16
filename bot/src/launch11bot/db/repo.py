@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 FINISH_MARKER = "_finish"  # current_step value once all content steps are done
+VERDICTS = ("answer", "partial", "offtopic")
 
 
 @dataclass
@@ -15,6 +16,8 @@ class Session:
     version: str
     current_step: str
     status: str  # active | finished | aborted
+    current_question: str | None = None  # the one open question, None when none is pending
+    last_verdict: str | None = None      # answer | partial | offtopic
 
 
 @runtime_checkable
@@ -65,6 +68,12 @@ class Repo(Protocol):
 
     async def get_billing(self, tg_user_id: int) -> dict:
         """Read-only billing snapshot: {free_used, paid_credits}. For display, never a gate."""
+
+    async def set_question(self, session_id: int, question: str | None) -> None:
+        """Store (or clear) the single open question for this session."""
+
+    async def set_verdict(self, session_id: int, verdict: str | None) -> None:
+        """Store (or clear) the model's assessment of the last reply. Must be in VERDICTS."""
 
     async def add_message(self, session_id: int, role: str, text: str) -> None: ...
 

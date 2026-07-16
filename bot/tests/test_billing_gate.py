@@ -31,7 +31,7 @@ async def test_needs_payment_blocks_claude(orch, repo):
     res = await handle_incoming(
         user_id=5, text="моя идея", version="lite", orch=orch, billing=billing, claude=fake,
         repo=repo, settings=orch.settings, on_text=_noop, on_document=_noop, on_notice=_noop,
-        on_needs_payment=on_needs_payment, on_denied=_noop,
+        on_needs_payment=on_needs_payment, on_denied=_noop, on_question=_noop,
     )
     assert fake.calls == 0        # criterion 5: no Claude call when payment needed
     assert invoiced == [1]        # invoice offered
@@ -49,9 +49,11 @@ async def test_free_run_proceeds_to_claude(orch, repo):
     await handle_incoming(
         user_id=6, text="идея портала", version="full", orch=orch, billing=billing, claude=fake,
         repo=repo, settings=orch.settings, on_text=on_text, on_document=_noop, on_notice=_noop,
-        on_needs_payment=_noop, on_denied=_noop,
+        on_needs_payment=_noop, on_denied=_noop, on_question=_noop,
     )
-    assert fake.calls == 1
+    # >=1: Phase-4 contract may spend one corrective retry when the model answers with
+    # prose instead of calling ask_question — the point here is that billing let it through
+    assert fake.calls >= 1
     b = await repo.get_billing(6)
     assert b["free_used"] == 1
     # the chosen version is honored when the session is created on the first message
@@ -69,6 +71,6 @@ async def test_version_pick_does_not_bill(orch, repo):
     await handle_incoming(
         user_id=50, text="идея", version="full", orch=orch, billing=billing, claude=fake,
         repo=repo, settings=orch.settings, on_text=_noop, on_document=_noop, on_notice=_noop,
-        on_needs_payment=_noop, on_denied=_noop,
+        on_needs_payment=_noop, on_denied=_noop, on_question=_noop,
     )
     assert (await repo.get_billing(50))["free_used"] == 1
