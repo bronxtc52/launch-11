@@ -4,7 +4,7 @@ from launch11bot.observability import scrub_event
 
 
 def test_access_gate():
-    allowed = {201374791, 42}
+    allowed = {424242, 42}
     assert is_allowed(42, allowed) is True
     assert is_allowed(999, allowed) is False
 

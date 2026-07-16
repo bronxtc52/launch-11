@@ -124,6 +124,40 @@ async def test_concurrent_start_consumes_one_entitlement():
         await pool.close()
 
 
+async def test_dialog_state_persists_across_reconnect():
+    from launch11bot.db.pg_repo import PgRepo
+    pool = await _fresh_pool()
+    try:
+        repo1 = PgRepo(pool)
+        s = await repo1.start_session_with_entitlement(321, "idea", "lite", free_runs=1)
+        await repo1.set_question(s.id, "Кто страдает без продукта?")
+        await repo1.set_verdict(s.id, "partial")
+        pool2 = await __import__("asyncpg").create_pool(DSN)
+        try:
+            repo2 = PgRepo(pool2)
+            again = await repo2.get_active_session(321)
+            assert again.current_question == "Кто страдает без продукта?"
+            assert again.last_verdict == "partial"
+        finally:
+            await pool2.close()
+    finally:
+        await pool.close()
+
+
+async def test_verdict_check_constraint():
+    import asyncpg
+    from launch11bot.db.pg_repo import PgRepo
+    pool = await _fresh_pool()
+    try:
+        repo = PgRepo(pool)
+        s = await repo.start_session_with_entitlement(322, "idea", "lite", free_runs=1)
+        with pytest.raises(asyncpg.exceptions.CheckViolationError):  # criterion 15 (DB level)
+            async with pool.acquire() as con:
+                await con.execute("UPDATE sessions SET last_verdict='bogus' WHERE id=$1", s.id)
+    finally:
+        await pool.close()
+
+
 async def test_concurrent_start_yields_single_active_session():
     from launch11bot.db.pg_repo import PgRepo
     pool = await _fresh_pool()

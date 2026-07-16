@@ -5,8 +5,9 @@ so a chatty model can never skip a step or half-write the spec.
 """
 from __future__ import annotations
 
-from ..db.repo import FINISH_MARKER, Session
+from ..db.repo import FINISH_MARKER, VERDICTS, Session
 from . import assemble, steps
+from .question import validate_question
 from .slug import slugify as _slugify
 
 
@@ -32,6 +33,9 @@ class Orchestrator:
         return await self.repo.get_active_session(tg_user_id)
 
     async def save_artifact(self, session: Session, step_id: str, markdown: str) -> Session:
+        # an incomplete answer must not be silently stepped over (council/user requirement)
+        if session.last_verdict == "partial":
+            raise StepError("ответ неполный — задай уточняющий вопрос, шаг ещё не готов")
         version = session.version
         idx = steps.step_index(version, step_id)
         if idx < 0:
@@ -58,6 +62,37 @@ class Orchestrator:
         else:
             # re-saving a past step: overwrite its artifact, do not move the pointer
             await self.repo.save_artifact(session.id, step_id, markdown)
+        return session
+
+    async def ask_question(self, session: Session, question: str) -> str:
+        """Store the ONE open question. Content is validated mechanically — a multi-question
+        dump must not sneak through inside the tool argument."""
+        reason = validate_question(question)
+        if reason:
+            raise StepError(f"вопрос отклонён: {reason} — задай ровно один короткий вопрос")
+        q = question.strip()
+        await self.repo.set_question(session.id, q)
+        await self.repo.set_verdict(session.id, None)
+        session.current_question = q
+        session.last_verdict = None
+        return q
+
+    async def assess_answer(self, session: Session, verdict: str, missing: str | None = None) -> str:
+        if verdict not in VERDICTS:
+            raise StepError(f"неизвестный вердикт: {verdict}")
+        await self.repo.set_verdict(session.id, verdict)
+        session.last_verdict = verdict
+        if verdict == "answer":  # question satisfied -> close it
+            await self.repo.set_question(session.id, None)
+            session.current_question = None
+        return verdict
+
+    async def skip_question(self, session: Session) -> Session:
+        """User escape hatch (/skip): never trap a human inside a question."""
+        await self.repo.set_question(session.id, None)
+        await self.repo.set_verdict(session.id, None)
+        session.current_question = None
+        session.last_verdict = None
         return session
 
     async def set_version(self, session: Session, version: str) -> Session:

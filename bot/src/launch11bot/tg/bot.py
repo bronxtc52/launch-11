@@ -31,11 +31,14 @@ def build_dispatcher(settings, repo) -> Dispatcher:
     dp = Dispatcher()
     orch = Orchestrator(repo, settings)
     claude = ClaudeClient(settings)
-    billing = BillingService(repo, settings.free_runs, settings.stars_price, settings.stars_label)
+    billing = BillingService(repo, settings.free_runs, settings.stars_price, settings.stars_label,
+                             owners=settings.owners)
     beta = settings.beta_allowlist
     pending_version: dict[int, str] = {}  # user_id -> chosen version, until first message
 
     def gated_out(user_id: int) -> bool:
+        if billing.is_owner(user_id):
+            return False  # owners always pass
         return bool(beta) and user_id not in beta
 
     async def send_html(msg: Message, text: str, keyboard: bool = True):
@@ -99,6 +102,19 @@ def build_dispatcher(settings, repo) -> Dispatcher:
         await repo.delete_session(msg.from_user.id)
         await msg.answer("Сессия удалена. Напиши /start, чтобы начать заново.")
 
+    @dp.message(Command("skip"))
+    async def on_skip(msg: Message):
+        # escape hatch: never trap a human inside an open question (council product_risk-5)
+        if gated_out(msg.from_user.id):
+            await msg.answer(DENIED)
+            return
+        session = await orch.resume(msg.from_user.id)
+        if not session:
+            await msg.answer("Нет активной сессии — /start")
+            return
+        await orch.skip_question(session)
+        await msg.answer("Ок, пропускаем этот вопрос. Продолжай своими словами.")
+
     @dp.callback_query(F.data == "progress")
     async def on_progress(cq: CallbackQuery):
         if gated_out(cq.from_user.id):
@@ -150,6 +166,7 @@ def build_dispatcher(settings, repo) -> Dispatcher:
                 on_text=lambda t: send_html(msg, t),
                 on_document=lambda slug, spec: send_spec(msg, slug, spec),
                 on_notice=lambda m: msg.answer(m),
+                on_question=lambda q: send_html(msg, q, keyboard=False),
                 on_needs_payment=lambda: send_invoice(msg.from_user.id, msg),
                 on_denied=lambda: msg.answer(DENIED),
             )

@@ -35,7 +35,7 @@ async def test_beta_allowlist_blocks_claude(orch, repo):
     res = await handle_incoming(
         user_id=999, text="hi", version="lite", orch=orch, billing=_billing(repo), claude=fake, repo=repo,
         settings=orch.settings, on_text=_noop, on_document=_noop, on_notice=_noop,
-        on_needs_payment=_noop, on_denied=on_denied,
+        on_needs_payment=_noop, on_denied=on_denied, on_question=_noop,
     )
     assert fake.calls == 0
     assert denied == [1]
@@ -60,7 +60,7 @@ async def test_full_loop_confirms_each_step_and_delivers_document(orch, repo):
     await handle_incoming(
         user_id=7, text="партнёрский портал", version="lite", orch=orch, billing=_billing(repo), claude=fake,
         repo=repo, settings=orch.settings, on_text=_noop, on_document=on_document,
-        on_notice=on_notice, on_needs_payment=_noop, on_denied=_noop,
+        on_notice=on_notice, on_needs_payment=_noop, on_denied=_noop, on_question=_noop,
     )
     assert len(notices) == 4
     assert len(docs) == 1
@@ -77,7 +77,7 @@ async def test_history_passed_to_claude_is_valid(orch, repo):
     await handle_incoming(
         user_id=5, text="next", version="lite", orch=orch, billing=_billing(repo), claude=fake, repo=repo,
         settings=orch.settings, on_text=_noop, on_document=_noop, on_notice=_noop,
-        on_needs_payment=_noop, on_denied=_noop,
+        on_needs_payment=_noop, on_denied=_noop, on_question=_noop,
     )
     h = fake.last_history
     assert h[0]["role"] == "user"

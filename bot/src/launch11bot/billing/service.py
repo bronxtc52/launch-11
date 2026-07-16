@@ -12,15 +12,24 @@ NEEDS_PAYMENT = object()  # sentinel returned when the user must pay to start a 
 
 
 class BillingService:
-    def __init__(self, repo, free_runs: int, stars_price: int, stars_label: str):
+    def __init__(self, repo, free_runs: int, stars_price: int, stars_label: str,
+                 owners: set[int] | None = None):
         self.repo = repo
         self.free_runs = free_runs
         self.stars_price = stars_price
         self.stars_label = stars_label
+        self.owners = owners or set()
+
+    def is_owner(self, user_id: int) -> bool:
+        return user_id in self.owners
 
     async def start_session(self, user_id: int, slug: str, version: str):
         """Consume one entitlement and create the session, or return NEEDS_PAYMENT.
-        Resuming an existing active session consumes nothing."""
+        Resuming an existing active session consumes nothing.
+        Owners run unlimited and are never billed."""
+        if self.is_owner(user_id):
+            # no entitlement touched at all — never consumed, never invoiced
+            return await self.repo.start_session(user_id, slugify(slug), version)
         session = await self.repo.start_session_with_entitlement(
             user_id, slugify(slug), version, self.free_runs)
         return session if session is not None else NEEDS_PAYMENT
