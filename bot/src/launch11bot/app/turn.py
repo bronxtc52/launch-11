@@ -4,12 +4,16 @@ Handlers in tg/bot.py are thin adapters over these functions.
 """
 from __future__ import annotations
 
+import logging
+
 from ..billing.service import NEEDS_PAYMENT
 from ..llm.history import normalize_history
 from ..llm.system_prompt import build_system
 from ..pipeline.orchestrator import StepError
 from ..pipeline.question import extract_first_question, validate_prose, validate_question
 from ..pipeline.tool_dispatcher import dispatch
+
+log = logging.getLogger(__name__)
 
 MAX_TOOL_ITERS = 6
 
@@ -19,6 +23,26 @@ CONTRACT_CORRECTION = (
     "ask_question с ОДНИМ самым важным вопросом."
 )
 FALLBACK_NUDGE = "Давай по порядку. Расскажи, пожалуйста, подробнее — с чего начнём?"
+MOVING_ON = (
+    "Понял, идём дальше — запишу по тому, что есть, и помечу как неполное. "
+    "Захочешь вернуться и уточнить — просто скажи."
+)
+
+
+def _decision_hint(decision) -> str:
+    """What the model must do next. The question is ALREADY closed by the controller —
+    the model is told, not asked."""
+    if decision.reason == "clarify_budget_exhausted":
+        return (f"Лимит уточнений исчерпан — вопрос закрыт кодом (статус: {decision.status}). "
+                f"Сохрани артефакт шага по тому, что есть, честно пометив неполноту. "
+                f"Ответ человека дословно: «{decision.raw_answer}». Больше не переспрашивай.")
+    if decision.reason == "deterministic_choice_match":
+        return (f"Человек выбрал вариант «{decision.value}» — это ПОЛНОЦЕННЫЙ ответ, "
+                f"засчитан кодом. Вопрос закрыт. Двигайся дальше.")
+    if decision.reason == "user_said_unknown":
+        return ("Человек честно сказал, что не знает — это нормальный исход. Вопрос закрыт "
+                "(статус: unknown). Не дави, двигайся дальше.")
+    return "Ответ принят, вопрос закрыт. Двигайся дальше."
 
 
 async def handle_incoming(
@@ -108,6 +132,7 @@ async def run_user_turn(
         # without a tool call: eating honest answers would be worse than the dump.
         violates = not has_ask and bool(turn.text) and validate_prose(turn.text) is not None
         if violates:
+            log.info("contract violation: text=%.70r retry_left=%s", turn.text, contract_retry_left)
             if contract_retry_left > 0:
                 contract_retry_left -= 1
                 history.append({"role": "assistant", "content": turn.text or "(пусто)"})
@@ -140,20 +165,26 @@ async def run_user_turn(
                 continue
             res = await dispatch(orch, session, name, args)
             session = res.session
+            # what the model actually decided — without this the dialogue is a black box
+            log.info("tool=%s ok=%s verdict=%s missing=%r msg=%.60s",
+                     name, res.ok, res.verdict, args.get("missing"), res.message)
             if name == "assess_answer" and res.ok:
                 assessed = True
-                if res.verdict == "offtopic":
-                    q = session.current_question
-                    if not q:
-                        await on_text(FALLBACK_NUDGE)
-                    elif prev_verdict == "offtopic":
-                        # second offtopic in a row on the same question: a wrong verdict must
-                        # not trap a human who already answered — offer the way out
-                        await send_question(f"{STUCK_PREFIX}\n\n{q}")
-                    else:
-                        # never a bare echo: say the answer was seen but didn't land
-                        await send_question(f"{OFFTOPIC_PREFIX}\n\n{q}")
-                    stop = True
+                # THE controller decides — the verdict is only its input. There is no
+                # per-verdict branch here on purpose: a future verdict type spends the same
+                # bounded budget and cannot open a new trap.
+                decision = await orch.resolve_answer(session, user_text, verdict=res.verdict)
+                log.info("controller: terminal=%s reason=%s status=%s clarify=%s/%s",
+                         decision.terminal, decision.reason, decision.status,
+                         session.clarify_count, session.clarify_budget)
+                if decision.terminal:
+                    if decision.reason == "clarify_budget_exhausted":
+                        # code moves on and says so honestly — no pretending it was complete
+                        await on_text(MOVING_ON)
+                    res.message = _decision_hint(decision)
+                else:
+                    res.message = ("Нужно уточнение. Задай ОДИН уточняющий вопрос через "
+                                   "ask_question — не повторяй прежний дословно.")
             if name == "ask_question" and res.ok and res.question:
                 await send_question(res.question)
             if res.ok and name in ("save_artifact", "create_adr"):
@@ -172,6 +203,18 @@ async def run_user_turn(
         history.append({"role": "user", "content": results})
         if stop:
             break
+
+    # NEVER end a turn silently. One guard for every dead-end at once: model never called
+    # assess_answer, validators rejected its question 6 times, MAX_TOOL_ITERS ran out, an
+    # unknown verdict jammed the gate — previously each of these left the human staring at
+    # nothing, forever, with no error either.
+    if not assistant_texts:
+        log.warning("silent turn averted: step=%s q=%r", session.current_step,
+                    session.current_question)
+        if session.current_question:
+            await send_question(f"{OFFTOPIC_PREFIX}\n\n{session.current_question}")
+        else:
+            await send_question(FALLBACK_NUDGE)
 
     # Persist ONE assistant message for the whole turn so the stored transcript
     # stays strictly alternating user/assistant (review finding #1).

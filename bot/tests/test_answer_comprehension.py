@@ -53,13 +53,16 @@ async def _run(orch, repo, session, claude, user_text, on_question=None, on_text
 
 # ---------------- RC2: the repeated question is never persisted -> the loop ----------------
 
-async def test_offtopic_repeat_is_persisted(orch, repo):
+async def test_turn_never_ends_silently_and_is_persisted(orch, repo):
+    """CONTRACT CHANGE: the bot no longer echoes on offtopic (the controller's budget owns
+    that now). But if the model then says nothing, the human must NOT get silence — and
+    whatever is sent must still land in the transcript."""
     s = await orch.start(1)
     await orch.ask_question(s, QUESTION)
     claude = FakeClaude([Turn(tool_calls=[("t1", "assess_answer", {"verdict": "offtopic"})])])
     sent_q, _ = await _run(orch, repo, s, claude, "Скорость")
 
-    assert sent_q, "bot must say something"
+    assert sent_q, "bot must say something — a silent turn is a dead end"
     stored = await repo.get_messages(s.id, 40)
     assistant_rows = [t for r, t in stored if r == "assistant"]
     assert assistant_rows, "the re-asked question MUST be persisted, else the model never " \
@@ -144,19 +147,21 @@ async def test_offtopic_is_not_a_silent_verbatim_repeat(orch, repo):
     assert msg.strip() != QUESTION, "but never as a bare, unexplained echo"
 
 
-async def test_second_offtopic_in_a_row_breaks_the_loop(orch, repo):
+async def test_repeated_offtopic_is_bounded_by_the_budget(orch, repo):
+    """CONTRACT CHANGE: the offtopic special case is deleted (fusion: one source of truth).
+    Repeated offtopic now simply spends the shared clarify budget and the code moves on —
+    which is a STRONGER guarantee than the old '/skip hint' and works for any verdict type."""
     s = await orch.start(1)
     await orch.ask_question(s, QUESTION)
-    await _run(orch, repo, s,
-               FakeClaude([Turn(tool_calls=[("a", "assess_answer", {"verdict": "offtopic"})])]),
-               "Скорость")
-    sent_q, sent_t = await _run(
-        orch, repo, s,
-        FakeClaude([Turn(tool_calls=[("b", "assess_answer", {"verdict": "offtopic"})])]),
-        "Я уже ответил выше")
-
-    said = " ".join(sent_q + sent_t)
-    assert "/skip" in said, "after a second offtopic in a row the user must be offered a way out"
+    for i in range(6):
+        await _run(orch, repo, s,
+                   FakeClaude([Turn(tool_calls=[(f"t{i}", "assess_answer",
+                                                 {"verdict": "offtopic"})])]),
+                   "Я уже ответил выше")
+        if s.current_question is None:
+            break
+    assert s.current_question is None, "budget must close the question — no endless loop"
+    assert s.clarify_count <= s.clarify_budget
 
 
 # ---------------- the happy path the user actually reported ----------------

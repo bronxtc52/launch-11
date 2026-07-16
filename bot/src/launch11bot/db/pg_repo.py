@@ -1,6 +1,7 @@
 """Postgres Repo (asyncpg). Atomic transitions + single-active-session invariant."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from ..pipeline import steps
@@ -31,7 +32,9 @@ def _row_to_session(r) -> Session:
     # every query uses SELECT * / RETURNING *, so the dialog-state columns are present
     return Session(r["id"], r["tg_user_id"], r["slug"], r["version"], r["current_step"],
                    r["status"], current_question=r["current_question"],
-                   last_verdict=r["last_verdict"])
+                   last_verdict=r["last_verdict"],
+                   current_options=json.loads(r["current_options"]) if r.get("current_options") else None,
+                   clarify_count=r["clarify_count"], clarify_budget=r["clarify_budget"])
 
 
 class PgRepo:
@@ -189,11 +192,18 @@ class PgRepo:
             return ({"free_used": r["free_used"], "paid_credits": r["paid_credits"]} if r
                     else {"free_used": 0, "paid_credits": 0})
 
-    async def set_question(self, session_id: int, question: str | None) -> None:
+    async def set_question(self, session_id: int, question: str | None,
+                           options: list[str] | None = None) -> None:
         async with self.pool.acquire() as con:
             await con.execute(
-                "UPDATE sessions SET current_question=$2, updated_at=now() WHERE id=$1",
-                session_id, question)
+                "UPDATE sessions SET current_question=$2, current_options=$3, updated_at=now() "
+                "WHERE id=$1",
+                session_id, question, json.dumps(options) if options else None)
+
+    async def set_clarify_count(self, session_id: int, n: int) -> None:
+        async with self.pool.acquire() as con:
+            await con.execute(
+                "UPDATE sessions SET clarify_count=$2, updated_at=now() WHERE id=$1", session_id, n)
 
     async def set_verdict(self, session_id: int, verdict: str | None) -> None:
         if verdict is not None and verdict not in VERDICTS:

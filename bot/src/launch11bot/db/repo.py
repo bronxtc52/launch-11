@@ -17,7 +17,11 @@ class Session:
     current_step: str
     status: str  # active | finished | aborted
     current_question: str | None = None  # the one open question, None when none is pending
-    last_verdict: str | None = None      # answer | partial | offtopic
+    last_verdict: str | None = None      # answer | partial | offtopic — OBSERVABILITY ONLY,
+                                         # it no longer controls anything (fusion C)
+    current_options: list[str] | None = None  # closed-choice options, judged by code
+    clarify_count: int = 0               # delays spent on the open question — NOT reset by a re-ask
+    clarify_budget: int = 2              # hard upper bound: the model cannot exceed it
 
 
 @runtime_checkable

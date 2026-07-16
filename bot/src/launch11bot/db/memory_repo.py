@@ -116,10 +116,17 @@ class InMemoryRepo:
     async def get_billing(self, tg_user_id) -> dict:
         return dict(self._billing.get(tg_user_id, {"free_used": 0, "paid_credits": 0}))
 
-    async def set_question(self, session_id: int, question: str | None) -> None:
+    async def set_question(self, session_id: int, question: str | None,
+                           options: list[str] | None = None) -> None:
         s = self._sessions.get(session_id)
         if s:
             s.current_question = question
+            s.current_options = options
+
+    async def set_clarify_count(self, session_id: int, n: int) -> None:
+        s = self._sessions.get(session_id)
+        if s:
+            s.clarify_count = n
 
     async def set_verdict(self, session_id: int, verdict: str | None) -> None:
         if verdict is not None and verdict not in VERDICTS:

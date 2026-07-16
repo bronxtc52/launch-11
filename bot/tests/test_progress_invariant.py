@@ -47,13 +47,18 @@ async def test_clarify_budget_bounds_any_verdict(orch, repo):
     """ЕДИНАЯ ветка: partial, offtopic и любой будущий тип тратят один бюджет."""
     s = await orch.start(1)
     await orch.ask_question(s, "Опиши боль?")
-    for verdict in ("partial", "offtopic", "partial"):  # mixed on purpose
+    budget = s.clarify_budget
+    decisions = []
+    for verdict in ("partial", "offtopic", "partial", "offtopic"):  # mixed on purpose
         d = await orch.resolve_answer(s, "ответ", verdict=verdict)
-        if not d.terminal:
-            await orch.ask_question(s, "уточни?")       # re-ask must NOT reset the counter
-    d = await orch.resolve_answer(s, "ответ", verdict="partial")
-    assert d.terminal is True, "бюджет исчерпан — код обязан сдвинуться сам"
-    assert d.reason == "clarify_budget_exhausted"
+        decisions.append(d)
+        if d.terminal:
+            break
+        await orch.ask_question(s, "уточни?")           # re-ask must NOT reset the counter
+    assert decisions[-1].terminal is True, "бюджет исчерпан — код обязан сдвинуться сам"
+    assert decisions[-1].reason == "clarify_budget_exhausted"
+    # ровно budget задержек, затем принудительный сдвиг — независимо от смеси вердиктов
+    assert len(decisions) == budget + 1
 
 
 async def test_reask_does_not_reset_the_counter(orch, repo):

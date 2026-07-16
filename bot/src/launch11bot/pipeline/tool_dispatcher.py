@@ -50,7 +50,9 @@ async def dispatch(orch: Orchestrator, session, tool_name: str, tool_input: dict
                 return ToolResult(False, f"вопрос отклонён: {reason}. Задай РОВНО ОДИН короткий "
                                          "вопрос в поле question, без списков и без вопросов "
                                          "в preamble", session)
-            q = await orch.ask_question(session, question)   # validates + stores, may raise StepError
+            opts = tool_input.get("options")
+            opts = [o for o in opts if isinstance(o, str)] if isinstance(opts, list) else None
+            q = await orch.ask_question(session, question, options=opts)
             # terminal: the question is asked, the turn ends — we wait for the human
             return ToolResult(True, "вопрос задан, ждём ответ", session,
                               question=rendered, terminal=True)

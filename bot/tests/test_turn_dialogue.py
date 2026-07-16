@@ -61,23 +61,23 @@ async def test_ask_question_is_terminal(orch, repo):
     assert s.current_step == "L1"
 
 
-async def test_offtopic_reasks_the_same_question(orch, repo):
+async def test_offtopic_spends_budget_and_lets_the_model_clarify(orch, repo):
+    """CONTRACT CHANGE (fusion): the bot-echoes-on-offtopic mechanism is DELETED — it was a
+    second source of truth next to the clarify budget. Offtopic now spends one delay and the
+    model asks its own follow-up. The old expectation (bot parrots the stored question) is
+    gone; the guarantee it stood for — the human is never stuck — is now structural and
+    covered by tests/test_progress_invariant.py."""
     s = await orch.start(1)
     await orch.ask_question(s, "Кто страдает без продукта?")
     claude = FakeClaude([
         Turn(tool_calls=[("t1", "assess_answer", {"verdict": "offtopic"})]),
-        Turn(tool_calls=[("t2", "ask_question", {"question": "Совсем другой вопрос?"})]),
+        Turn(tool_calls=[("t2", "ask_question", {"question": "Уточню: кто именно страдает?"})]),
     ])
     txt, qs, on_text, on_question = _cbs()
     await _run(orch, repo, s, claude, on_text, on_question, user_text="а сколько стоит?")
-    # Criterion 3 intent stands: the bot re-asks the STORED question, not one the model
-    # reworded. But the original expectation (a bare, verbatim echo) enshrined the very
-    # bug users hit — the bot parroted the question as if no answer had been given.
-    # It must now say the answer was seen and didn't land, while still re-asking verbatim.
-    assert len(qs) == 1
-    assert "Кто страдает без продукта?" in qs[0]   # same stored question, not reworded
-    assert qs[0].strip() != "Кто страдает без продукта?"  # never a silent echo
-    assert claude.calls == 1                       # turn ended, no new question asked
+    assert qs == ["Уточню: кто именно страдает?"]  # the model clarifies, one question
+    assert s.clarify_count == 1                     # one delay spent, budget is finite
+    assert s.current_question == "Уточню: кто именно страдает?"
 
 
 async def test_order_gate_requires_assess_first(orch, repo):
