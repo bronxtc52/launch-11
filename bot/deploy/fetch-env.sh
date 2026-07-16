@@ -19,9 +19,12 @@ get() { az keyvault secret show --vault-name "$VAULT" --name "launch11--${ENVNS}
 {
   echo "LAUNCH11_BOT_TOKEN=$(get BOT-TOKEN)"
   echo "ANTHROPIC_API_KEY=$(get ANTHROPIC-API-KEY)"
-  echo "ALLOWED_TG_USER_IDS=$(get ALLOWED-TG-USER-IDS)"
+  # Phase-3 rollout kill-switch: keep populated during smoke, clear for public launch
+  echo "BETA_ALLOWLIST_IDS=$(get BETA-ALLOWLIST-IDS)"
   echo "DATABASE_URL=${DATABASE_URL:-postgresql://launch11:launch11@localhost:5432/launch11}"
   echo "LAUNCH11_MODEL=${LAUNCH11_MODEL:-claude-sonnet-5}"
+  echo "FREE_RUNS=${FREE_RUNS:-1}"
+  echo "STARS_PRICE=${STARS_PRICE:-100}"
 } > "$OUT"
 
 chmod 600 "$OUT"
