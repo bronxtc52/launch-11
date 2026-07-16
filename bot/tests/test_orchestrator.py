@@ -4,7 +4,7 @@ from launch11bot.pipeline.orchestrator import StepError
 
 
 async def test_start_session_defaults(orch):
-    s = await orch.start(201374791, idea_slug="my-idea")
+    s = await orch.start(424242, idea_slug="my-idea")
     assert s.version == "lite"
     assert s.current_step == "L1"
     assert s.status == "active"

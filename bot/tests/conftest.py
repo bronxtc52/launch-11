@@ -8,7 +8,7 @@ class FakeSettings:
         self.max_context_messages = 40
         self.max_artifact_bytes = 20000
         self.max_session_artifact_bytes = 200000
-        self.allowed_user_ids = {201374791}
+        self.allowed_user_ids = {424242}
         self.beta_allowlist = set()  # empty => billing is the only gate (Phase 3)
 
 

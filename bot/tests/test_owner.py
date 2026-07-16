@@ -3,7 +3,7 @@ from launch11bot.app.turn import handle_incoming
 from launch11bot.billing.service import NEEDS_PAYMENT, BillingService
 from launch11bot.llm.client import Turn
 
-OWNER = 201374791  # @bronxtc52 — Arman Toskanbayev
+OWNER = 111  # synthetic id — real owner ids live only in Key Vault (launch11--*--OWNER-IDS)
 
 
 class FakeClaude:
