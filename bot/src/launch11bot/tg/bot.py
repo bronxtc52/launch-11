@@ -68,6 +68,11 @@ def build_dispatcher(settings, repo) -> Dispatcher:
         if existing and existing.current_step != FINISH_MARKER:
             await msg.answer(f"С возвращением! Ты на шаге {existing.current_step}. Продолжим.",
                              reply_markup=nav_keyboard())
+            if existing.current_question:
+                # coming back a day later: show the question that is still open, don't
+                # leave the human guessing what the bot is waiting for
+                await send_html(msg, f"Открытый вопрос:\n\n{existing.current_question}",
+                                keyboard=False)
         elif existing:
             await msg.answer("Все шаги пройдены — напиши что-нибудь, чтобы собрать spec.md, "
                              "или нажми «Начать заново».", reply_markup=nav_keyboard())
@@ -166,7 +171,9 @@ def build_dispatcher(settings, repo) -> Dispatcher:
                 on_text=lambda t: send_html(msg, t),
                 on_document=lambda slug, spec: send_spec(msg, slug, spec),
                 on_notice=lambda m: msg.answer(m),
-                on_question=lambda q: send_html(msg, q, keyboard=False),
+                # keep the nav buttons reachable: the dialogue is now almost entirely
+                # questions, so keyboard=False here hid Прогресс/Заново forever
+                on_question=lambda q: send_html(msg, q),
                 on_needs_payment=lambda: send_invoice(msg.from_user.id, msg),
                 on_denied=lambda: msg.answer(DENIED),
             )

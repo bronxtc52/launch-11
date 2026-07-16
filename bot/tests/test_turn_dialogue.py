@@ -70,7 +70,13 @@ async def test_offtopic_reasks_the_same_question(orch, repo):
     ])
     txt, qs, on_text, on_question = _cbs()
     await _run(orch, repo, s, claude, on_text, on_question, user_text="а сколько стоит?")
-    assert qs == ["Кто страдает без продукта?"]   # criterion 3: bot repeats the SAME question
+    # Criterion 3 intent stands: the bot re-asks the STORED question, not one the model
+    # reworded. But the original expectation (a bare, verbatim echo) enshrined the very
+    # bug users hit — the bot parroted the question as if no answer had been given.
+    # It must now say the answer was seen and didn't land, while still re-asking verbatim.
+    assert len(qs) == 1
+    assert "Кто страдает без продукта?" in qs[0]   # same stored question, not reworded
+    assert qs[0].strip() != "Кто страдает без продукта?"  # never a silent echo
     assert claude.calls == 1                       # turn ended, no new question asked
 
 

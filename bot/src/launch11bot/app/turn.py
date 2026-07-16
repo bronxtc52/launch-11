@@ -49,19 +49,30 @@ async def handle_incoming(
     )
 
 
-async def _fail_closed(orch, session, text, on_question, on_text):
-    """Model kept violating the contract: NEVER forward the dump. Salvage one question."""
-    q = extract_first_question(text)
+OFFTOPIC_PREFIX = (
+    "Вижу твой ответ, но он не отвечает на заданный вопрос. Переспрошу:"
+)
+STUCK_PREFIX = (
+    "Похоже, я не могу понять твой ответ — это моя проблема, не твоя. "
+    "Если вопрос лишний или непонятный, напиши /skip и пойдём дальше. Или ответь иначе:"
+)
+
+
+async def _fail_closed(orch, session, text, send_question, on_text):
+    """Model kept violating the contract: NEVER forward the dump."""
+    if session.current_question:
+        # A question is already on the table — re-ask THAT one. Salvaging a question out of
+        # the dump here would silently swap the wording the human is looking at.
+        await send_question(f"{OFFTOPIC_PREFIX}\n\n{session.current_question}")
+        return
+    q = extract_first_question(text)  # nothing open: salvage one question from the dump
     if q and validate_question(q) is None:
         try:
-            await on_question(await orch.ask_question(session, q))
+            await send_question(await orch.ask_question(session, q))
             return
         except StepError:
             pass
-    if session.current_question:
-        await on_question(session.current_question)
-    else:
-        await on_text(FALLBACK_NUDGE)
+    await on_text(FALLBACK_NUDGE)
 
 
 async def run_user_turn(
@@ -76,9 +87,18 @@ async def run_user_turn(
     # assessment is owed only while a question is open
     assessed = session.current_question is None
     contract_retry_left = 1
+    # was the PREVIOUS reply already judged offtopic? then we're looping — break it out
+    prev_verdict = session.last_verdict
+
+    async def send_question(text: str):
+        """Every question the user sees MUST also land in the transcript — otherwise the
+        next reply becomes a second consecutive `user` row, normalize_history coalesces
+        them, and the model never learns it already re-asked (the endless-repeat loop)."""
+        await on_question(text)
+        assistant_texts.append(text)
 
     for _ in range(MAX_TOOL_ITERS):
-        system = build_system(session)
+        system = build_system(session, last_user_text=user_text)
         turn = await claude.turn(system, history, session.version)
         has_ask = any(n == "ask_question" for _, n, _ in turn.tool_calls)
 
@@ -93,7 +113,7 @@ async def run_user_turn(
                 history.append({"role": "assistant", "content": turn.text or "(пусто)"})
                 history.append({"role": "user", "content": CONTRACT_CORRECTION})
                 continue
-            await _fail_closed(orch, session, turn.text, on_question, on_text)
+            await _fail_closed(orch, session, turn.text, send_question, on_text)
             break
 
         # prose is forwarded only if it is mechanically clean (no question, no list) —
@@ -109,29 +129,45 @@ async def run_user_turn(
         results, stop = [], False
         for tool_id, name, args in turn.tool_calls:
             if not assessed and name != "assess_answer":
-                # order-gate: judge the reply before doing anything else; NOT executed
+                # Order-gate: judge the reply before doing anything else; NOT executed.
+                # This hint is injected with role=user, so it LOOKS like the last human turn —
+                # it must quote the real reply and mark itself as service, or the model judges
+                # this very text and returns `offtopic` for a perfectly good answer.
                 results.append({"type": "tool_result", "tool_use_id": tool_id,
-                                "content": "Сначала вызови assess_answer для последней реплики "
-                                           "пользователя, потом действуй."})
+                                "content": "[служебное сообщение системы, это НЕ реплика "
+                                           f"человека] Сначала вызови assess_answer для реплики "
+                                           f"человека: «{user_text}». Оценивай именно её."})
                 continue
             res = await dispatch(orch, session, name, args)
             session = res.session
             if name == "assess_answer" and res.ok:
                 assessed = True
                 if res.verdict == "offtopic":
-                    # the bot repeats the stored question verbatim — the model doesn't reword it
-                    await on_question(session.current_question or FALLBACK_NUDGE)
+                    q = session.current_question
+                    if not q:
+                        await on_text(FALLBACK_NUDGE)
+                    elif prev_verdict == "offtopic":
+                        # second offtopic in a row on the same question: a wrong verdict must
+                        # not trap a human who already answered — offer the way out
+                        await send_question(f"{STUCK_PREFIX}\n\n{q}")
+                    else:
+                        # never a bare echo: say the answer was seen but didn't land
+                        await send_question(f"{OFFTOPIC_PREFIX}\n\n{q}")
                     stop = True
             if name == "ask_question" and res.ok and res.question:
-                await on_question(res.question)
-                assistant_texts.append(res.question)
-                stop = True  # terminal: question asked, wait for the human
+                await send_question(res.question)
             if res.ok and name in ("save_artifact", "create_adr"):
                 await on_notice(res.message)
             if res.spec:
                 await on_document(session.slug, res.spec)
             results.append({"type": "tool_result", "tool_use_id": tool_id, "content": res.message})
+            if res.terminal:  # ask_question ends the turn — wait for the human
+                stop = True
             if stop:
+                skipped = turn.tool_calls[turn.tool_calls.index((tool_id, name, args)) + 1:]
+                # every tool_use needs a tool_result or the next API call 400s
+                results.extend({"type": "tool_result", "tool_use_id": tid,
+                                "content": "пропущено: ход завершён"} for tid, _, _ in skipped)
                 break
         history.append({"role": "user", "content": results})
         if stop:
