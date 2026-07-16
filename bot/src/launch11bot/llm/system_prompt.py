@@ -38,10 +38,23 @@ _METHOD = """\
 """
 
 
-def build_system(session: Session) -> str:
+def build_system(session: Session, last_user_text: str | None = None) -> str:
     step = steps.get_step(session.version, session.current_step)
-    done = []  # filled by caller if needed; keep prompt lean
     lines = [_METHOD, ""]
+    if session.current_question:
+        # Anchor the assessment explicitly. Without this the model had to guess the target
+        # from a history polluted by tool_results (which carry role=user) and judged a
+        # SERVICE message as 'offtopic' — echoing the question at a user who had answered.
+        lines.append(f'ОТКРЫТЫЙ ВОПРОС (оцениваешь ответ ИМЕННО на него):\n«{session.current_question}»')
+        if last_user_text:
+            lines.append(f'РЕПЛИКА ЧЕЛОВЕКА, КОТОРУЮ НАДО ОЦЕНИТЬ:\n«{last_user_text}»')
+        lines.append(
+            "Оценивай ТОЛЬКО эту реплику человека. Служебные сообщения (tool_result, "
+            "замечания системы вроде «Сначала вызови assess_answer…») — НЕ реплика человека, "
+            "их не оценивай. Если реплика выбирает один из предложенных вариантов (например "
+            "«Скорость») — это ПОЛНОЦЕННЫЙ ответ (verdict=answer), а не offtopic."
+        )
+        lines.append("")
     lines.append(f"Версия пайплайна: {session.version}. Шаги: {', '.join(steps.step_ids(session.version))}.")
     if step is not None:
         lines.append("")
