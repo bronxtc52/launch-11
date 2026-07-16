@@ -33,6 +33,7 @@ async def _run() -> None:
     await bot.set_my_commands([
         BotCommand(command="start", description="Начать / продолжить"),
         BotCommand(command="skip", description="Пропустить текущий вопрос"),
+        BotCommand(command="progress", description="Показать прогресс по шагам"),
         BotCommand(command="reset", description="Начать заново"),
     ])
     try:

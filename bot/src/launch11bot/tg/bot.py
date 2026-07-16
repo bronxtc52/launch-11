@@ -13,7 +13,7 @@ from ..billing.service import BillingService
 from ..db.repo import FINISH_MARKER
 from ..llm.client import ClaudeClient
 from ..pipeline.orchestrator import Orchestrator
-from .keyboards import nav_keyboard, version_keyboard
+from .keyboards import version_keyboard
 from .sanitize import chunk_html, md_to_telegram_html
 
 log = logging.getLogger(__name__)
@@ -41,10 +41,11 @@ def build_dispatcher(settings, repo) -> Dispatcher:
             return False  # owners always pass
         return bool(beta) and user_id not in beta
 
-    async def send_html(msg: Message, text: str, keyboard: bool = True):
+    async def send_html(msg: Message, text: str, keyboard: bool = False):
+        # nav lives in the command menu (/progress, /reset) — an inline keyboard under every
+        # single message was noise in a dialogue that is almost entirely questions
         for part in chunk_html(md_to_telegram_html(text)):
-            await msg.answer(part, parse_mode="HTML",
-                             reply_markup=nav_keyboard() if keyboard else None)
+            await msg.answer(part, parse_mode="HTML")
 
     async def send_spec(msg: Message, slug: str, spec: str):
         buf = io.BytesIO(spec.encode("utf-8"))
@@ -59,6 +60,22 @@ def build_dispatcher(settings, repo) -> Dispatcher:
             "Бесплатный прогон использован. Чтобы начать новый — оплати звёздами Telegram:")
         await chat_msg.answer_invoice(**billing.invoice_params(user_id))
 
+    async def _progress_text(user_id: int) -> str | None:
+        session = await orch.resume(user_id)
+        if not session:
+            return None
+        prog = await orch.progress(session)
+        lines = [f"{'✅' if s_['done'] else '⬜'} {s_['id']}: {s_['title']}" for s_ in prog["steps"]]
+        return "Прогресс:\n" + "\n".join(lines)
+
+    @dp.message(Command("progress"))
+    async def on_progress_cmd(msg: Message):
+        if gated_out(msg.from_user.id):
+            await msg.answer(DENIED)
+            return
+        text = await _progress_text(msg.from_user.id)
+        await msg.answer(text or "Нет активной сессии — /start")
+
     @dp.message(Command("start"))
     async def on_start(msg: Message):
         if gated_out(msg.from_user.id):
@@ -66,8 +83,7 @@ def build_dispatcher(settings, repo) -> Dispatcher:
             return
         existing = await orch.resume(msg.from_user.id)
         if existing and existing.current_step != FINISH_MARKER:
-            await msg.answer(f"С возвращением! Ты на шаге {existing.current_step}. Продолжим.",
-                             reply_markup=nav_keyboard())
+            await msg.answer(f"С возвращением! Ты на шаге {existing.current_step}. Продолжим.")
             if existing.current_question:
                 # coming back a day later: show the question that is still open, don't
                 # leave the human guessing what the bot is waiting for
@@ -75,7 +91,7 @@ def build_dispatcher(settings, repo) -> Dispatcher:
                                 keyboard=False)
         elif existing:
             await msg.answer("Все шаги пройдены — напиши что-нибудь, чтобы собрать spec.md, "
-                             "или нажми «Начать заново».", reply_markup=nav_keyboard())
+                             "или начни заново: /reset")
         else:
             await msg.answer(WELCOME, reply_markup=version_keyboard())
 
@@ -95,8 +111,7 @@ def build_dispatcher(settings, repo) -> Dispatcher:
         # actual message, so clicking a version never burns an entitlement (review architect-1).
         pending_version[cq.from_user.id] = version
         await cq.message.answer(
-            f"Версия: {VERSION_NAMES[version]}. Расскажи свою идею — с чего начнём?",
-            reply_markup=nav_keyboard())
+            f"Версия: {VERSION_NAMES[version]}. Расскажи свою идею — с чего начнём?")
         await cq.answer()
 
     @dp.message(Command("reset"))
@@ -125,13 +140,8 @@ def build_dispatcher(settings, repo) -> Dispatcher:
         if gated_out(cq.from_user.id):
             await cq.answer(DENIED)
             return
-        session = await orch.resume(cq.from_user.id)
-        if not session:
-            await cq.answer("Нет активной сессии — /start")
-            return
-        prog = await orch.progress(session)
-        lines = [f"{'✅' if s['done'] else '⬜'} {s['id']}: {s['title']}" for s in prog["steps"]]
-        await cq.message.answer("Прогресс:\n" + "\n".join(lines))
+        text = await _progress_text(cq.from_user.id)   # old buttons in chat history keep working
+        await cq.message.answer(text or "Нет активной сессии — /start")
         await cq.answer()
 
     @dp.callback_query(F.data == "reset")

@@ -11,14 +11,3 @@ def version_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🔧 Spec-only — только техчасть", callback_data="ver:spec_only")],
         ]
     )
-
-
-def nav_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="📊 Прогресс", callback_data="progress"),
-                InlineKeyboardButton(text="♻️ Начать заново", callback_data="reset"),
-            ]
-        ]
-    )
