@@ -14,7 +14,6 @@ class FakeSettings:
     launch11_model = "claude-sonnet-5"
     claude_max_tokens = 8000
     claude_timeout_s = 90.0
-    claude_max_retries = 2
     turn_budget_s = 120.0
 
     class _Key:
