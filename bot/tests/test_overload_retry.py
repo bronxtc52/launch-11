@@ -118,7 +118,7 @@ async def test_deadline_stops_retrying(monkeypatch, slept):
     v2 проверял только перед повторной → 6 итераций tool-loop × свежие 90с = 540с молчания.
     """
     c = _client(monkeypatch, lambda: FakeStatusError(529))
-    past = asyncio.get_event_loop().time() - 1  # дедлайн уже истёк
+    past = asyncio.get_running_loop().time() - 1  # дедлайн уже истёк
 
     with pytest.raises(ClaudeOverloaded):
         await c.turn(system="s", history=[{"role": "user", "content": "x"}],

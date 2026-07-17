@@ -21,7 +21,10 @@ class Settings(BaseSettings):
     # ask_question call and the human was left with a stump and no question.
     claude_max_tokens: int = 8000
     claude_timeout_s: float = 90.0
-    claude_max_retries: int = 2
+    # Budget for ONE human message, shared across the tool loop. Per-CALL budgets multiply by
+    # MAX_TOOL_ITERS: 6 iterations x (6 attempts x 90s + backoff) would be ~57 minutes of
+    # silence for a single message — and silence is "бросить человека" (инвариант #6).
+    turn_budget_s: float = 120.0
 
     # billing (Phase 3)
     free_runs: int = 1

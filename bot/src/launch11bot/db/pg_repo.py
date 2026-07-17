@@ -100,7 +100,9 @@ class PgRepo:
             )
             res = await con.execute(
                 "UPDATE sessions SET current_step=$3, updated_at=now() "
-                "WHERE id=$1 AND current_step=$2",
+                # AND status='active': an in-flight turn must not keep walking a session
+                # the human already abandoned (its money is refunded and gone)
+                "WHERE id=$1 AND current_step=$2 AND status='active'",
                 session_id, from_step, to_step,
             )
             return res.endswith(" 1")
@@ -109,7 +111,9 @@ class PgRepo:
         async with self.pool.acquire() as con:
             res = await con.execute(
                 "UPDATE sessions SET current_step=$3, updated_at=now() "
-                "WHERE id=$1 AND current_step=$2",
+                # AND status='active': an in-flight turn must not keep walking a session
+                # the human already abandoned (its money is refunded and gone)
+                "WHERE id=$1 AND current_step=$2 AND status='active'",
                 session_id, from_step, to_step,
             )
             return res.endswith(" 1")  # "UPDATE 1" on success
@@ -301,8 +305,11 @@ class PgRepo:
                     "UPDATE billing SET free_used=free_used-1, updated_at=now() "
                     "WHERE tg_user_id=$1 AND free_used>0", tg_user_id)
                 if not res.endswith(" 1"):
-                    log.warning("refund: ledger says free but free_used=0 (user=%s)", tg_user_id)
-                    return False
+                    # raise, not return: returning would COMMIT status='abandoned' while the
+                    # entitlement silently evaporates — the very thing we are fixing. A ledger
+                    # that disagrees with billing is a bug; roll back and let it be loud.
+                    raise RuntimeError(
+                        f"refund ledger mismatch: consumed='free' but free_used=0 (user={tg_user_id})")
             elif consumed == "paid":
                 await con.execute(
                     "UPDATE billing SET paid_credits=paid_credits+1, updated_at=now() "

@@ -10,7 +10,7 @@ class FakeClaude:
     def __init__(self):
         self.calls = 0
 
-    async def turn(self, system, history, version):
+    async def turn(self, system, history, version, **_):
         self.calls += 1
         return Turn(text="ок")
 

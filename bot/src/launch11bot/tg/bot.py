@@ -60,6 +60,19 @@ def build_dispatcher(settings, repo) -> Dispatcher:
             "Бесплатный прогон использован. Чтобы начать новый — оплати звёздами Telegram:")
         await chat_msg.answer_invoice(**billing.invoice_params(user_id))
 
+    async def _deliver_spec(msg: Message, slug: str, spec: str) -> None:
+        """A failed send must not read as «сбойнуло» — the spec exists and is reachable.
+
+        The status is already committed at this point, so an unguarded raise here sent the human
+        to the generic error, then to a paywall, with their spec sitting in the DB. Tell them
+        where it is instead.
+        """
+        try:
+            await send_spec(msg, slug, spec)
+        except Exception:
+            log.exception("spec delivery failed — the spec itself is safe in the DB")
+            await msg.answer("Спека готова, но отправка сорвалась. Пришли /spec — вышлю ещё раз.")
+
     async def _progress_text(user_id: int) -> str | None:
         session = await orch.resume(user_id)
         if not session:
@@ -207,18 +220,21 @@ def build_dispatcher(settings, repo) -> Dispatcher:
     @dp.message(F.text)
     async def on_text(msg: Message):
         try:
-            version = pending_version.pop(msg.from_user.id, "lite")
+            # None, not "lite": a silent default re-burned the run the human had just got back
+            version = pending_version.pop(msg.from_user.id, None)
             await handle_incoming(
                 user_id=msg.from_user.id, text=msg.text, version=version, orch=orch,
                 billing=billing, claude=claude, repo=repo, settings=settings,
                 on_text=lambda t: send_html(msg, t),
-                on_document=lambda slug, spec: send_spec(msg, slug, spec),
+                on_document=lambda slug, spec: _deliver_spec(msg, slug, spec),
                 on_notice=lambda m: msg.answer(m),
                 # keep the nav buttons reachable: the dialogue is now almost entirely
                 # questions, so keyboard=False here hid Прогресс/Заново forever
                 on_question=lambda q: send_html(msg, q),
                 on_needs_payment=lambda: send_invoice(msg.from_user.id, msg),
                 on_denied=lambda: msg.answer(DENIED),
+                on_needs_version=lambda: msg.answer(
+                    "С чего начнём? Выбери версию:", reply_markup=version_keyboard()),
             )
         except ClaudeOverloaded:
             # log.error, NOT warning: sentry_sdk.init has no LoggingIntegration, so the default

@@ -34,6 +34,10 @@ async def _run() -> None:
         BotCommand(command="start", description="Начать / продолжить"),
         BotCommand(command="skip", description="Пропустить текущий вопрос"),
         BotCommand(command="progress", description="Показать прогресс по шагам"),
+        # invisible /spec = no way back for a human whose document send failed: the status is
+        # committed before the file lands, so a Telegram blip left them with no spec, no refund
+        # and a paywall. Same lesson as /skip: an escape hatch nobody can find is not one.
+        BotCommand(command="spec", description="Прислать готовую спеку ещё раз"),
         BotCommand(command="reset", description="Начать заново"),
     ])
     try:

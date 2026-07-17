@@ -9,6 +9,7 @@
 """
 import pytest
 from launch11bot.billing.service import BillingService, NEEDS_PAYMENT
+from launch11bot.pipeline.orchestrator import StepError
 
 OWNER = 424242
 
@@ -137,12 +138,20 @@ async def test_finish_after_abandon_does_not_resurrect_the_session(billing, repo
 
     Без условного UPDATE: finish перезапишет abandoned→finished и отдаст spec.md —
     человек получит и спеку, и возвращённый прогон. Повторяемо сколько угодно.
+
+    Зовём именно orch.finish (а не repo напрямую): первая версия теста брала фикстуру orch и
+    ни разу её не трогала — проверяла деталь, а не сценарий, который её порождает.
     """
+    from launch11bot.pipeline import steps
     session = await billing.start_session(1, slug="idea", version="lite")
-    await repo.abandon_session(1)
+    for st in steps.PIPELINES["lite"]:            # ход дошёл до конца пайплайна
+        await repo.save_artifact(session.id, st.id, f"## {st.title}\n\nсодержимое")
+    await repo.abandon_session(1)                 # человек нажал «начать заново»
     assert (await repo.get_billing(1))["free_used"] == 0
 
-    ok = await repo.set_status_if_active(session.id, "finished")
+    # ход ещё держит объект со status='active' в памяти — он не знает про abandon
+    with pytest.raises(StepError):
+        await orch.finish(session)
 
-    assert ok is False, "брошенную сессию нельзя завершить — спеку не отдавать"
-    assert (await repo.get_billing(1))["free_used"] == 0, "и прогон обязан остаться возвращённым"
+    assert (await repo.get_billing(1))["free_used"] == 0, "прогон обязан остаться возвращённым"
+    assert (await repo.get_last_finished_session(1)) is None, "брошенная не стала finished"

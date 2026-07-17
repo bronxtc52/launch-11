@@ -21,6 +21,9 @@ JITTER = 0.25                  # spread only UPWARD: symmetric jitter could shri
                                # to ~23s, making the "budget >= 30s" guarantee true only
                                # sometimes. Waiting a bit longer is free; under-waiting is the
                                # bug we are fixing.
+MAX_SLEEP_S = 30.0             # hard cap on ANY single wait, deadline or not: a server-sent
+                               # `Retry-After: 3600` would otherwise park the whole turn for an
+                               # hour. Obeying a back-off request must not become a hang.
 
 
 class ClaudeOverloaded(Exception):
@@ -91,7 +94,7 @@ class ClaudeClient:
         notified = False
 
         for i, base in enumerate((0.0,) + BACKOFF_S):
-            remaining = None if deadline is None else deadline - asyncio.get_event_loop().time()
+            remaining = None if deadline is None else deadline - asyncio.get_running_loop().time()
             if remaining is not None and remaining <= 0:
                 raise ClaudeOverloaded("turn budget exhausted") from last_exc
 
@@ -100,10 +103,11 @@ class ClaudeClient:
                 ra = _retry_after(last_exc) if last_exc else None
                 if ra is not None:
                     delay = ra
+                delay = min(delay, MAX_SLEEP_S)  # belt-and-braces: never hang on Retry-After
                 if remaining is not None:
                     if delay >= remaining:
                         # obeying it would outlive the turn: don't hammer, don't fake waiting
-                        raise ClaudeOverloaded("retry-after exceeds turn budget") from last_exc
+                        raise ClaudeOverloaded("wait exceeds turn budget") from last_exc
                 if on_wait and not notified:
                     notified = True
                     try:
@@ -111,7 +115,7 @@ class ClaudeClient:
                     except Exception:  # a courtesy notice must never kill the turn
                         log.debug("on_wait notice failed", exc_info=True)
                 await asyncio.sleep(delay)
-                remaining = None if deadline is None else deadline - asyncio.get_event_loop().time()
+                remaining = None if deadline is None else deadline - asyncio.get_running_loop().time()
                 if remaining is not None and remaining <= 0:
                     raise ClaudeOverloaded("turn budget exhausted") from last_exc
 

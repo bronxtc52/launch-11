@@ -10,7 +10,7 @@ class FakeClaude:
         self.script = list(script)
         self.calls = 0
 
-    async def turn(self, system, history, version):
+    async def turn(self, system, history, version, **_):
         self.calls += 1
         return self.script.pop(0) if self.script else Turn(text="")
 
@@ -59,7 +59,7 @@ async def test_every_tool_use_gets_a_tool_result(orch, repo):
     captured = {}
 
     class Recorder(FakeClaude):
-        async def turn(self, system, history, version):
+        async def turn(self, system, history, version, **_):
             captured["history"] = [dict(m) for m in history]
             return await super().turn(system, history, version)
 
