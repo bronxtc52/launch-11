@@ -15,13 +15,17 @@ class Session:
     slug: str
     version: str
     current_step: str
-    status: str  # active | finished | aborted
+    status: str  # active | finished | abandoned
     current_question: str | None = None  # the one open question, None when none is pending
     last_verdict: str | None = None      # answer | partial | offtopic — OBSERVABILITY ONLY,
                                          # it no longer controls anything (fusion C)
     current_options: list[str] | None = None  # closed-choice options, judged by code
     clarify_count: int = 0               # delays spent on the open question — NOT reset by a re-ask
     clarify_budget: int = 2              # hard upper bound: the model cannot exceed it
+    consumed: str = "none"               # free | paid | none — WHICH bucket paid for this run.
+                                         # The row is the LEDGER: a refund goes back to the same
+                                         # bucket, so this row must never be deleted.
+    refunded: bool = False               # the entitlement was already given back — never twice
 
 
 @runtime_checkable
@@ -48,6 +52,16 @@ class Repo(Protocol):
         (plan A1/C1). Returns whether the pointer advanced."""
 
     async def set_status(self, session_id: int, status: str) -> None: ...
+
+    async def set_status_if_active(self, session_id: int, status: str) -> bool:
+        """Conditional close: only an ACTIVE session may become finished/abandoned.
+        Returns False if it was already abandoned/finished — the caller must NOT deliver
+        value on False (an in-flight turn must not resurrect a session the human abandoned)."""
+
+    async def get_last_finished_session(self, tg_user_id: int) -> Session | None:
+        """Most recent finished run, for re-delivering its spec (/spec). get_active_session
+        filters on 'active', so a finished run is invisible to it — and a human whose document
+        send failed would otherwise have no way back to the spec they paid for."""
 
     async def set_version(self, session_id: int, version: str, first_step: str) -> None:
         """Change a session's pipeline version and reset current_step (empty session only)."""
@@ -83,4 +97,14 @@ class Repo(Protocol):
 
     async def get_messages(self, session_id: int, limit: int) -> list[tuple[str, str]]: ...
 
-    async def delete_session(self, tg_user_id: int) -> None: ...
+    async def abandon_session(self, tg_user_id: int) -> bool:
+        """End the active run without delivering value and give the entitlement back.
+
+        Replaces delete_session (removed): the session row is the LEDGER of what was consumed.
+        Deleting it destroys the proof and lets a second reset print another free run — so we
+        mark 'abandoned', never delete. The transcript survives as a side effect.
+
+        Idempotent by construction: the guard lives in the UPDATE's WHERE, not in a code check.
+        Returns whether an entitlement was actually returned — False for owners (nothing was
+        consumed) and for an already-abandoned or finished run (a delivered spec is spent).
+        """

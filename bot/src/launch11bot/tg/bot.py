@@ -11,7 +11,7 @@ from aiogram.types import (BufferedInputFile, CallbackQuery, Message, PreCheckou
 from ..app.turn import handle_incoming
 from ..billing.service import BillingService
 from ..db.repo import FINISH_MARKER
-from ..llm.client import ClaudeClient
+from ..llm.client import ClaudeClient, ClaudeOverloaded
 from ..pipeline.orchestrator import Orchestrator
 from .keyboards import version_keyboard
 from .sanitize import chunk_html, md_to_telegram_html
@@ -68,6 +68,25 @@ def build_dispatcher(settings, repo) -> Dispatcher:
         lines = [f"{'✅' if s_['done'] else '⬜'} {s_['id']}: {s_['title']}" for s_ in prog["steps"]]
         return "Прогресс:\n" + "\n".join(lines)
 
+    @dp.message(Command("spec"))
+    async def on_spec_cmd(msg: Message):
+        """Re-deliver the spec of the last finished run.
+
+        The escape hatch for a failed document send (Telegram blip, flood-control, a 200 KB
+        file): the status commits before the document lands, so without this the human is left
+        with no spec, no refund and a paywall — the incident, 30 seconds later. Re-assembly is
+        deterministic and the run is already paid for, so this is safe to repeat.
+        """
+        if gated_out(msg.from_user.id):
+            await msg.answer(DENIED)
+            return
+        session = await repo.get_last_finished_session(msg.from_user.id)
+        if not session:
+            await msg.answer("Готовой спеки пока нет — заверши прогон или начни: /start")
+            return
+        spec = await orch.finish(session)  # idempotent: re-assembles, does not re-charge
+        await send_spec(msg, session.slug, spec)
+
     @dp.message(Command("progress"))
     async def on_progress_cmd(msg: Message):
         if gated_out(msg.from_user.id):
@@ -114,13 +133,27 @@ def build_dispatcher(settings, repo) -> Dispatcher:
             f"Версия: {VERSION_NAMES[version]}. Расскажи свою идею — с чего начнём?")
         await cq.answer()
 
+    async def _do_reset(user_id: int, answer):
+        """Abandon the run, give the entitlement back, and say what actually happened.
+
+        «Сессия удалена» was a lie twice over: the session survives (it is the ledger) and,
+        worse, it hid the refund — the whole point of the fix. Offer the version keyboard
+        instead of letting the next stray text start a run on the default version.
+        """
+        refunded = await repo.abandon_session(user_id)
+        pending_version.pop(user_id, None)
+        if refunded:
+            await answer("Начали заново — прогон вернулся на счёт. Выбери версию:",
+                         reply_markup=version_keyboard())
+        else:
+            await answer("Начали заново. Выбери версию:", reply_markup=version_keyboard())
+
     @dp.message(Command("reset"))
     async def on_reset(msg: Message):
         if gated_out(msg.from_user.id):
             await msg.answer(DENIED)
             return
-        await repo.delete_session(msg.from_user.id)
-        await msg.answer("Сессия удалена. Напиши /start, чтобы начать заново.")
+        await _do_reset(msg.from_user.id, msg.answer)
 
     @dp.message(Command("skip"))
     async def on_skip(msg: Message):
@@ -149,8 +182,8 @@ def build_dispatcher(settings, repo) -> Dispatcher:
         if gated_out(cq.from_user.id):
             await cq.answer(DENIED)
             return
-        await repo.delete_session(cq.from_user.id)
-        await cq.message.answer("Сессия удалена. Напиши /start, чтобы начать заново.")
+        # cq.from_user is the human; cq.message.from_user would be the BOT (billing bug, review)
+        await _do_reset(cq.from_user.id, cq.message.answer)
         await cq.answer()
 
     @dp.pre_checkout_query()
@@ -187,6 +220,14 @@ def build_dispatcher(settings, repo) -> Dispatcher:
                 on_needs_payment=lambda: send_invoice(msg.from_user.id, msg),
                 on_denied=lambda: msg.answer(DENIED),
             )
+        except ClaudeOverloaded:
+            # log.error, NOT warning: sentry_sdk.init has no LoggingIntegration, so the default
+            # event_level=ERROR means a warning would be a breadcrumb, not an issue — we'd go
+            # blind on exactly the class of incident this handler exists for.
+            log.error("anthropic overloaded — turn abandoned", exc_info=True)
+            await msg.answer(
+                "Claude сейчас перегружен — это на моей стороне, не у тебя. "
+                "Твой ответ я сохранил: напиши «продолжай» через пару минут.")
         except Exception:
             log.exception("turn failed")
             await msg.answer("Упс, что-то сбойнуло на моей стороне. Попробуй ещё раз.")
