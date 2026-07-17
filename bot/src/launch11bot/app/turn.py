@@ -4,9 +4,11 @@ Handlers in tg/bot.py are thin adapters over these functions.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from ..billing.service import NEEDS_PAYMENT
+from ..llm.client import ClaudeOverloaded
 from ..llm.history import normalize_history
 from ..llm.system_prompt import build_system
 from ..pipeline.orchestrator import StepError
@@ -59,6 +61,7 @@ def _decision_hint(decision) -> str:
 async def handle_incoming(
     *, user_id, text, version, orch, billing, claude, repo, settings,
     on_text, on_document, on_notice, on_needs_payment, on_denied, on_question,
+    on_needs_version=None,
 ):
     """Two gates BEFORE any Claude call: optional beta allowlist, then billing
     entitlement. No entitlement → invoice, no session, no Claude (criterion 5).
@@ -71,6 +74,12 @@ async def handle_incoming(
         return None
     session = await orch.resume(user_id)
     if session is None:
+        if version is None and on_needs_version is not None:
+            # Never start a run on a version the human did not pick. Defaulting to "lite" here
+            # meant that after a refund, one stray «ок» silently re-consumed the returned run
+            # on a version they never chose — the refund undone by a single message.
+            await on_needs_version()
+            return None
         # consume an entitlement atomically as the session is created
         # The first utterance does NOT name the product — it was often «не понял» / «да»,
         # and that phrase then named the delivered file forever («не-понял-spec.md»).
@@ -139,9 +148,33 @@ async def run_user_turn(
         await on_question(text)
         assistant_texts.append(text)
 
+    # ONE budget for the whole turn, shared across the tool loop. A per-call budget multiplies
+    # by MAX_TOOL_ITERS into ~57 minutes of silence — the client had the deadline logic from the
+    # start, but nobody passed it, so every branch guarding it was dead code in production.
+    # getattr matches the local idiom for settings (see beta_allowlist above) and keeps the test
+    # doubles alive; that the REAL Settings carries the field is pinned by a separate test —
+    # otherwise a silent default would let the budget quietly vanish from config again.
+    deadline = asyncio.get_running_loop().time() + getattr(settings, "turn_budget_s", 120.0)
+    waited_notice = False
+
+    async def _notice_waiting():
+        nonlocal waited_notice
+        if not waited_notice:
+            waited_notice = True
+            await on_text("Claude сейчас тупит — жду ответа, не уходи.")
+
     for _ in range(MAX_TOOL_ITERS):
         system = build_system(session, last_user_text=user_text)
-        turn = await claude.turn(system, history, session.version)
+        try:
+            turn = await claude.turn(system, history, session.version,
+                                     deadline=deadline, on_wait=_notice_waiting)
+        except ClaudeOverloaded:
+            # The human's line is already stored (above) but no assistant line follows, so the
+            # transcript would show two `user` rows in a row — the exact signature our cheap
+            # detector reads as "the bot said something and lost it" (CLAUDE.md, отладка).
+            # Leave an honest marker so the detector keeps meaning what it says.
+            await repo.add_message(session.id, "assistant", "[перегрузка, ответа не было]")
+            raise
         has_ask = any(n == "ask_question" for _, n, _ in turn.tool_calls)
 
         # A truncated answer is not an answer: max_tokens cut the model off mid-generation,

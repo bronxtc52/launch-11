@@ -68,6 +68,19 @@ class InMemoryRepo:
         if s:
             s.status = status
 
+    async def get_last_finished_session(self, tg_user_id: int) -> Session | None:
+        done = [s for s in self._sessions.values()
+                if s.tg_user_id == tg_user_id and s.status == "finished"]
+        return max(done, key=lambda s: s.id) if done else None
+
+    async def set_status_if_active(self, session_id: int, status: str) -> bool:
+        async with self._lock:  # mirrors PgRepo's conditional UPDATE
+            s = self._sessions.get(session_id)
+            if s is None or s.status != "active":
+                return False
+            s.status = status
+            return True
+
     async def set_version(self, session_id: int, version: str, first_step: str) -> None:
         s = self._sessions.get(session_id)
         if s:
@@ -92,13 +105,16 @@ class InMemoryRepo:
             b = self._billing.setdefault(tg_user_id, {"free_used": 0, "paid_credits": 0})
             if b["free_used"] < free_runs:
                 b["free_used"] += 1
+                consumed = "free"
             elif b["paid_credits"] > 0:
                 b["paid_credits"] -= 1
+                consumed = "paid"
             else:
                 return None  # needs payment — no session created
             self._seq += 1
             s = Session(self._seq, tg_user_id, slug, version,
-                        current_step=steps.first_step_id(version), status="active")
+                        current_step=steps.first_step_id(version), status="active",
+                        consumed=consumed)
             self._sessions[s.id] = s
             self._artifacts[s.id] = {}
             self._messages[s.id] = []
@@ -151,10 +167,21 @@ class InMemoryRepo:
     async def get_messages(self, session_id: int, limit: int) -> list[tuple[str, str]]:
         return self._messages.get(session_id, [])[-limit:]
 
-    async def delete_session(self, tg_user_id: int) -> None:
-        for sid, s in list(self._sessions.items()):
-            if s.tg_user_id == tg_user_id:
-                self._sessions.pop(sid, None)
-                self._artifacts.pop(sid, None)
-                self._messages.pop(sid, None)
-                self._adrs.pop(sid, None)
+    async def abandon_session(self, tg_user_id: int) -> bool:
+        """Mirrors PgRepo: mark, never delete — the row is the ledger of what was consumed."""
+        async with self._lock:
+            s = self._active_for(tg_user_id)
+            if s is None or s.refunded:
+                return False  # no active run / already refunded — nothing to give back
+            s.status = "abandoned"
+            s.refunded = True
+            b = self._billing.setdefault(tg_user_id, {"free_used": 0, "paid_credits": 0})
+            if s.consumed == "free":
+                if b["free_used"] <= 0:
+                    return False  # ledger disagrees with billing — refund nothing, stay safe
+                b["free_used"] -= 1
+            elif s.consumed == "paid":
+                b["paid_credits"] += 1
+            else:
+                return False  # 'none' — owner: nothing was consumed, claim no refund
+            return True

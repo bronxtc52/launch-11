@@ -23,7 +23,7 @@ class FakeClaude:
         self.systems: list[str] = []
         self.histories: list[list] = []
 
-    async def turn(self, system, history, version):
+    async def turn(self, system, history, version, **_):
         self.calls += 1
         self.systems.append(system)
         self.histories.append([dict(m) for m in history])

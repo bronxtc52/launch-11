@@ -18,7 +18,8 @@ async def test_new_user_gets_free_run(billing, repo):
 async def test_second_run_without_credit_needs_payment(billing, repo):
     await billing.start_session(1, slug="idea", version="lite")
     # abandon (delete session) so resume won't return it, then try a new run
-    await repo.delete_session(1)
+    # сжечь прогон = довести до finished; abandon_session вернул бы его и убил смысл теста
+    await repo.set_status((await repo.get_active_session(1)).id, "finished")
     result = await billing.start_session(1, slug="idea2", version="lite")
     assert result is NEEDS_PAYMENT
     b = await repo.get_billing(1)
@@ -27,7 +28,7 @@ async def test_second_run_without_credit_needs_payment(billing, repo):
 
 async def test_paid_credit_grants_and_is_consumed(billing, repo):
     await billing.start_session(1, slug="a", version="lite")
-    await repo.delete_session(1)
+    await repo.set_status((await repo.get_active_session(1)).id, "finished")
     granted = await billing.on_successful_payment(1, charge_id="ch1", currency="XTR",
                                                   total_amount=100, invoice_payload="run:1")
     assert granted is True

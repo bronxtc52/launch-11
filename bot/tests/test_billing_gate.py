@@ -9,7 +9,7 @@ class FakeClaude:
         self.script = list(script)
         self.calls = 0
 
-    async def turn(self, system, history, version):
+    async def turn(self, system, history, version, **_):
         self.calls += 1
         return self.script.pop(0) if self.script else Turn(text="")
 
@@ -21,7 +21,7 @@ async def _noop(*a):
 async def test_needs_payment_blocks_claude(orch, repo):
     billing = BillingService(repo, free_runs=1, stars_price=100, stars_label="Прогон")
     await billing.start_session(5, slug="a", version="lite")  # burn the free run
-    await repo.delete_session(5)                              # abandon it
+    await repo.set_status((await repo.get_active_session(5)).id, "finished")  # spend it, no refund
     fake = FakeClaude([Turn(text="should not run")])
     invoiced = []
 

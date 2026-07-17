@@ -58,13 +58,35 @@ async def test_finish_rejected_when_incomplete(orch):
         await orch.finish(s)
 
 
-async def test_double_finish_rejected(orch):
+async def test_second_finish_redelivers_the_same_spec(orch):
+    """Was `test_double_finish_rejected` — that expectation enshrined bug C-1.
+
+    Rejecting the second finish made a FAILED delivery permanent: the status is committed
+    before the document reaches Telegram, so one flaky send left the human with no spec, no
+    refund (reset only matches 'active') and a paywall on the next /start. Re-assembly is
+    deterministic and the run is already paid for, so re-delivery is safe — and is the only
+    way back for someone whose send failed. What must be guarded is resurrection of an
+    abandoned session (see below), not a second delivery.
+    """
     s = await orch.start(1)
     for sid in ["L1", "L2", "L3", "L4"]:
         s = await orch.save_artifact(s, sid, f"# {sid}")
-    await orch.finish(s)  # first ok, status -> finished
+
+    first = await orch.finish(s)
+    again = await orch.finish(s)
+
+    assert again == first
+
+
+async def test_finish_rejected_after_abandon(orch, repo):
+    """The real guard: a turn still in flight must not resurrect what the human abandoned."""
+    s = await orch.start(1)
+    for sid in ["L1", "L2", "L3", "L4"]:
+        s = await orch.save_artifact(s, sid, f"# {sid}")
+    await repo.abandon_session(1)
+
     with pytest.raises(StepError):
-        await orch.finish(s)  # second must be rejected (no duplicate delivery)
+        await orch.finish(s)
 
 
 async def test_session_byte_cap_enforced(orch):

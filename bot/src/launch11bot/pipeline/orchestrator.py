@@ -189,15 +189,29 @@ class Orchestrator:
         return set(steps.step_ids(session.version)).issubset(arts.keys())
 
     async def finish(self, session: Session) -> str:
-        if session.status == "finished":
-            raise StepError("сессия уже завершена")  # guard double delivery (review #9)
+        """Assemble and deliver the spec. Status gates MONEY, not delivery.
+
+        The old guard (`status == "finished"` -> StepError) made a failed delivery permanent:
+        the status was committed BEFORE the document reached Telegram, so one flaky send left
+        the human with no spec, no refund (reset only matches 'active') and a paywall on the
+        next /start — the incident, moved 30 seconds to the right. Re-assembly is deterministic
+        and the run is already paid for, so re-delivering is always safe.
+
+        Order matters: can_finish -> assemble -> conditional close -> return. Closing first
+        would mean a failed assemble leaves 'finished' with no spec and no way back.
+        """
+        if session.status == "abandoned":
+            raise StepError("сессия брошена — начни заново через /start")
         if not await self.can_finish(session):
             raise StepError("пайплайн не завершён — не все шаги заполнены")
         arts = await self.repo.get_artifacts(session.id)
         adrs = await self.repo.get_adrs(session.id)
         spec = assemble.assemble_spec(session.slug, session.version, arts, adrs)
-        await self.repo.set_status(session.id, "finished")
-        session.status = "finished"
+        if session.status != "finished":
+            # False => the human abandoned it mid-turn: do NOT resurrect, do NOT deliver
+            if not await self.repo.set_status_if_active(session.id, "finished"):
+                raise StepError("сессия брошена — начни заново через /start")
+            session.status = "finished"
         return spec
 
     async def progress(self, session: Session) -> dict:

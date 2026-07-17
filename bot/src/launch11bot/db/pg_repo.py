@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from ..pipeline import steps
 from .repo import VERDICTS, Session
+
+log = logging.getLogger(__name__)
 
 # Migrations ship as package data, so this resolves correctly both from the repo and
 # from an installed wheel (site-packages) — a repo-relative path silently found zero
@@ -34,7 +37,8 @@ def _row_to_session(r) -> Session:
                    r["status"], current_question=r["current_question"],
                    last_verdict=r["last_verdict"],
                    current_options=json.loads(r["current_options"]) if r.get("current_options") else None,
-                   clarify_count=r["clarify_count"], clarify_budget=r["clarify_budget"])
+                   clarify_count=r["clarify_count"], clarify_budget=r["clarify_budget"],
+                   consumed=r["consumed"], refunded=r["refunded"])
 
 
 class PgRepo:
@@ -96,7 +100,9 @@ class PgRepo:
             )
             res = await con.execute(
                 "UPDATE sessions SET current_step=$3, updated_at=now() "
-                "WHERE id=$1 AND current_step=$2",
+                # AND status='active': an in-flight turn must not keep walking a session
+                # the human already abandoned (its money is refunded and gone)
+                "WHERE id=$1 AND current_step=$2 AND status='active'",
                 session_id, from_step, to_step,
             )
             return res.endswith(" 1")
@@ -105,7 +111,9 @@ class PgRepo:
         async with self.pool.acquire() as con:
             res = await con.execute(
                 "UPDATE sessions SET current_step=$3, updated_at=now() "
-                "WHERE id=$1 AND current_step=$2",
+                # AND status='active': an in-flight turn must not keep walking a session
+                # the human already abandoned (its money is refunded and gone)
+                "WHERE id=$1 AND current_step=$2 AND status='active'",
                 session_id, from_step, to_step,
             )
             return res.endswith(" 1")  # "UPDATE 1" on success
@@ -144,7 +152,8 @@ class PgRepo:
     async def start_session_with_entitlement(self, tg_user_id, slug, version, free_runs):
         first = steps.first_step_id(version)
         async with self.pool.acquire() as con, con.transaction():
-            # ensure a billing row and lock it — serializes concurrent starts for this user
+            # LOCK ORDER: billing -> sessions. abandon_session takes the SAME order.
+            # Reversing it here or there = ABBA deadlock on concurrent /start + /reset.
             await con.execute(
                 "INSERT INTO billing (tg_user_id) VALUES ($1) ON CONFLICT DO NOTHING", tg_user_id)
             b = await con.fetchrow(
@@ -158,17 +167,45 @@ class PgRepo:
                 await con.execute(
                     "UPDATE billing SET free_used=free_used+1, updated_at=now() WHERE tg_user_id=$1",
                     tg_user_id)
+                consumed = "free"
             elif b["paid_credits"] > 0:
                 await con.execute(
                     "UPDATE billing SET paid_credits=paid_credits-1, updated_at=now() "
                     "WHERE tg_user_id=$1", tg_user_id)
+                consumed = "paid"
             else:
                 return None  # no entitlement — payment needed, no session created
+            # record WHICH bucket paid for this run: the refund must go back to the same one
             row = await con.fetchrow(
-                "INSERT INTO sessions (tg_user_id, slug, version, current_step, status) "
-                "VALUES ($1, $2, $3, $4, 'active') RETURNING *",
-                tg_user_id, slug, version, first)
+                "INSERT INTO sessions (tg_user_id, slug, version, current_step, status, consumed) "
+                "VALUES ($1, $2, $3, $4, 'active', $5) RETURNING *",
+                tg_user_id, slug, version, first, consumed)
             return _row_to_session(row)
+
+    async def get_last_finished_session(self, tg_user_id: int) -> Session | None:
+        """The most recent completed run — the source for re-delivering a spec (/spec).
+
+        get_active_session filters on 'active', so a finished run is invisible to it: without
+        this, a human whose document send failed had no way back to their own spec.
+        """
+        async with self.pool.acquire() as con:
+            row = await con.fetchrow(
+                "SELECT * FROM sessions WHERE tg_user_id=$1 AND status='finished' "
+                "ORDER BY id DESC LIMIT 1", tg_user_id)
+            return _row_to_session(row) if row else None
+
+    async def set_status_if_active(self, session_id: int, status: str) -> bool:
+        """Conditional close: only an ACTIVE session may become finished/abandoned.
+
+        Unconditional set_status let an in-flight turn resurrect an abandoned session:
+        the human hit «начать заново» (refunded), the turn reached finish, overwrote
+        abandoned -> finished and delivered the spec — free spec + refunded run, repeatable.
+        """
+        async with self.pool.acquire() as con:
+            res = await con.execute(
+                "UPDATE sessions SET status=$2, updated_at=now() "
+                "WHERE id=$1 AND status='active'", session_id, status)
+            return res.endswith(" 1")
 
     async def grant_paid_credit(self, charge_id, tg_user_id, stars) -> bool:
         async with self.pool.acquire() as con, con.transaction():
@@ -234,6 +271,51 @@ class PgRepo:
             )
             return [(r["role"], r["text"]) for r in rows]
 
-    async def delete_session(self, tg_user_id: int) -> None:
-        async with self.pool.acquire() as con:
-            await con.execute("DELETE FROM sessions WHERE tg_user_id=$1", tg_user_id)
+    async def abandon_session(self, tg_user_id: int) -> bool:
+        """End the active run without delivering value, giving the entitlement back.
+
+        Replaces delete_session. The session row is the LEDGER of what was consumed — deleting
+        it would delete the proof and let a second reset print another free run. So we mark,
+        never delete (the transcript survives too, which is our only debugging surface).
+
+        Idempotency lives in the UPDATE's WHERE, not in a code check (KB lesson
+        `pending-invoice-uniqueness`): a concurrent second reset gets rowcount=0 and no refund.
+        `status='finished'` also matches nothing here — a delivered spec.md is honestly spent.
+
+        Returns whether an entitlement was actually returned (False for owners: nothing was
+        ever consumed, so telling them «прогон вернулся» would be a lie).
+        """
+        async with self.pool.acquire() as con, con.transaction():
+            # LOCK ORDER: billing -> sessions — same as start_session_with_entitlement. ABBA otherwise.
+            await con.execute(
+                "INSERT INTO billing (tg_user_id) VALUES ($1) ON CONFLICT DO NOTHING", tg_user_id)
+            await con.execute(
+                "SELECT free_used, paid_credits FROM billing WHERE tg_user_id=$1 FOR UPDATE",
+                tg_user_id)
+            row = await con.fetchrow(
+                "UPDATE sessions SET status='abandoned', refunded=true, updated_at=now() "
+                "WHERE tg_user_id=$1 AND status='active' AND refunded=false "
+                "RETURNING id, consumed", tg_user_id)
+            if row is None:
+                return False  # no active run / already abandoned — nothing to give back
+            consumed = row["consumed"]
+            if consumed == "free":
+                # floor in the WHERE, not GREATEST(): a clamp would hide a broken ledger
+                res = await con.execute(
+                    "UPDATE billing SET free_used=free_used-1, updated_at=now() "
+                    "WHERE tg_user_id=$1 AND free_used>0", tg_user_id)
+                if not res.endswith(" 1"):
+                    # raise, not return: returning would COMMIT status='abandoned' while the
+                    # entitlement silently evaporates — the very thing we are fixing. A ledger
+                    # that disagrees with billing is a bug; roll back and let it be loud.
+                    raise RuntimeError(
+                        f"refund ledger mismatch: consumed='free' but free_used=0 (user={tg_user_id})")
+            elif consumed == "paid":
+                await con.execute(
+                    "UPDATE billing SET paid_credits=paid_credits+1, updated_at=now() "
+                    "WHERE tg_user_id=$1", tg_user_id)
+            else:
+                return False  # 'none' — owner or legacy row: nothing was consumed
+            log.info("refund: returned %s run to user=%s (session=%s)",
+                     consumed, tg_user_id, row["id"])
+            return True

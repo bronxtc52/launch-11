@@ -17,7 +17,7 @@ class FakeClaude:
         self.script = list(script)
         self.calls = 0
 
-    async def turn(self, system, history, version):
+    async def turn(self, system, history, version, **_):
         self.calls += 1
         return self.script.pop(0) if self.script else Turn(text="ок")
 

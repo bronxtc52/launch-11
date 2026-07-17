@@ -10,7 +10,7 @@ class FakeClaude:
         self.calls = 0
         self.last_history = None
 
-    async def turn(self, system, history, version):
+    async def turn(self, system, history, version, **_):
         self.calls += 1
         self.last_history = history
         return self.script.pop(0) if self.script else Turn(text="")

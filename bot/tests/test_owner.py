@@ -10,7 +10,7 @@ class FakeClaude:
     def __init__(self):
         self.calls = 0
 
-    async def turn(self, system, history, version):
+    async def turn(self, system, history, version, **_):
         self.calls += 1
         return Turn(text="ок")
 
@@ -30,7 +30,7 @@ async def test_owner_runs_are_never_billed(repo):
     for i in range(5):
         s = await billing.start_session(OWNER, slug=f"идея-{i}", version="full")
         assert s is not NEEDS_PAYMENT
-        await repo.delete_session(OWNER)
+        await repo.abandon_session(OWNER)
     b = await repo.get_billing(OWNER)
     assert b["free_used"] == 0 and b["paid_credits"] == 0  # nothing consumed at all
 
@@ -38,7 +38,7 @@ async def test_owner_runs_are_never_billed(repo):
 async def test_non_owner_still_billed(repo):
     billing = _billing(repo)
     await billing.start_session(999, slug="идея", version="lite")
-    await repo.delete_session(999)
+    await repo.set_status((await repo.get_active_session(999)).id, "finished")  # spent, not refunded
     assert await billing.start_session(999, slug="идея2", version="lite") is NEEDS_PAYMENT
     assert (await repo.get_billing(999))["free_used"] == 1
 
@@ -63,7 +63,7 @@ async def test_owner_bypasses_beta_gate(orch, repo):
 async def test_owner_never_sees_invoice(orch, repo):
     billing = _billing(repo)
     await billing.start_session(OWNER, slug="a", version="lite")
-    await repo.delete_session(OWNER)
+    await repo.abandon_session(OWNER)
     invoiced = []
 
     async def on_needs_payment():
