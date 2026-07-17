@@ -40,35 +40,43 @@ say "1. Resource group (tagged — cost attribution depends on it)"
 az group create -n "$RG" -l "$LOC" --tags $TAGS -o none
 
 say "2. ACR (Basic)"
-az acr create -n "$ACR" -g "$RG" --sku Basic -l "$LOC" --tags $TAGS -o none
+if az acr show -n "$ACR" -g "$RG" -o none 2>/dev/null; then echo "  (уже есть)"; else
+  az acr create -n "$ACR" -g "$RG" --sku Basic -l "$LOC" --tags $TAGS -o none
+fi
 
 say "3. Postgres B1ms + database (password already waiting in Key Vault)"
 PGPASS=$(az keyvault secret show --vault-name "$KV" --name launch11--production--PG-ADMIN-PASSWORD --query value -o tsv)
-az postgres flexible-server create -n "$PG" -g "$RG" -l "$LOC" \
-  --admin-user "$PGADMIN" --admin-password "$PGPASS" \
-  --sku-name Standard_B1ms --tier Burstable --version 16 --storage-size 32 \
-  --public-access 0.0.0.0 --yes --tags $TAGS -o none
-az postgres flexible-server db create -g "$RG" -s "$PG" -d "$PGDB" -o none
+if az postgres flexible-server show -n "$PG" -g "$RG" -o none 2>/dev/null; then echo "  (сервер уже есть)"; else
+  az postgres flexible-server create -n "$PG" -g "$RG" -l "$LOC" \
+    --admin-user "$PGADMIN" --admin-password "$PGPASS" \
+    --sku-name Standard_B1ms --tier Burstable --version 16 --storage-size 32 \
+    --public-access 0.0.0.0 --yes --tags $TAGS -o none
+fi
+az postgres flexible-server db create -g "$RG" -s "$PG" -n "$PGDB" -o none 2>/dev/null \
+  || echo "  (БД уже есть)"
 # let Azure services (the Container App) reach it
 az postgres flexible-server firewall-rule create -g "$RG" -n "$PG" \
-  --rule-name AllowAzureServices --start-ip-address 0.0.0.0 --end-ip-address 0.0.0.0 -o none
+  --rule-name AllowAzureServices --start-ip-address 0.0.0.0 --end-ip-address 0.0.0.0 -o none 2>/dev/null \
+  || echo "  (правило уже есть)"
 
 say "4. DATABASE_URL -> Key Vault (never printed, never in git)"
 DBURL="postgresql://${PGADMIN}:${PGPASS}@${PG}.postgres.database.azure.com:5432/${PGDB}?sslmode=require"
 az keyvault secret set --vault-name "$KV" --name launch11--production--DATABASE-URL --value "$DBURL" -o none
 
 say "5. Log Analytics + 2GB daily cap (unbounded ingestion is how logs eat credits)"
-az monitor log-analytics workspace create -g "$RG" -n "$LAW" -l "$LOC" --tags $TAGS -o none
+az monitor log-analytics workspace create -g "$RG" -n "$LAW" -l "$LOC" --tags $TAGS -o none 2>/dev/null || echo "  (workspace уже есть)"
 az monitor log-analytics workspace update -g "$RG" -n "$LAW" --quota 2 -o none
 LAW_ID=$(az monitor log-analytics workspace show -g "$RG" -n "$LAW" --query customerId -o tsv)
 LAW_KEY=$(az monitor log-analytics workspace get-shared-keys -g "$RG" -n "$LAW" --query primarySharedKey -o tsv)
 
 say "6. Container Apps environment"
-az containerapp env create -n "$ENVIRONMENT" -g "$RG" -l "$LOC" \
-  --logs-workspace-id "$LAW_ID" --logs-workspace-key "$LAW_KEY" --tags $TAGS -o none
+if az containerapp env show -n "$ENVIRONMENT" -g "$RG" -o none 2>/dev/null; then echo "  (env уже есть)"; else
+  az containerapp env create -n "$ENVIRONMENT" -g "$RG" -l "$LOC" \
+    --logs-workspace-id "$LAW_ID" --logs-workspace-key "$LAW_KEY" --tags $TAGS -o none
+fi
 
 say "7. App identity -> Key Vault Secrets User + AcrPull"
-az identity create -n "$UAMI_APP" -g "$RG" -l "$LOC" --tags $TAGS -o none
+az identity create -n "$UAMI_APP" -g "$RG" -l "$LOC" --tags $TAGS -o none 2>/dev/null || echo "  (identity уже есть)"
 APP_PRINCIPAL=$(az identity show -n "$UAMI_APP" -g "$RG" --query principalId -o tsv)
 KV_ID=$(az keyvault show -n "$KV" --query id -o tsv)
 ACR_ID=$(az acr show -n "$ACR" --query id -o tsv)
@@ -77,10 +85,10 @@ for i in $(seq 1 10); do  # identity propagation is eventually consistent
     --role "Key Vault Secrets User" --scope "$KV_ID" -o none 2>/dev/null && break || sleep 6
 done
 az role assignment create --assignee-object-id "$APP_PRINCIPAL" --assignee-principal-type ServicePrincipal \
-  --role "AcrPull" --scope "$ACR_ID" -o none
+  --role "AcrPull" --scope "$ACR_ID" -o none 2>/dev/null || echo "  (роль уже есть)"
 
 say "8. CI identity (OIDC) -> AcrPush on ACR + Contributor on THIS RG only"
-az identity create -n "$UAMI_CI" -g "$RG" -l "$LOC" --tags $TAGS -o none
+az identity create -n "$UAMI_CI" -g "$RG" -l "$LOC" --tags $TAGS -o none 2>/dev/null || echo "  (identity уже есть)"
 CI_CLIENT=$(az identity show -n "$UAMI_CI" -g "$RG" --query clientId -o tsv)
 CI_PRINCIPAL=$(az identity show -n "$UAMI_CI" -g "$RG" --query principalId -o tsv)
 RG_ID=$(az group show -n "$RG" --query id -o tsv)
@@ -89,20 +97,20 @@ for i in $(seq 1 10); do
     --role "AcrPush" --scope "$ACR_ID" -o none 2>/dev/null && break || sleep 6
 done
 az role assignment create --assignee-object-id "$CI_PRINCIPAL" --assignee-principal-type ServicePrincipal \
-  --role "Contributor" --scope "$RG_ID" -o none
+  --role "Contributor" --scope "$RG_ID" -o none 2>/dev/null || echo "  (роль уже есть)"
 # the app's identity must be assignable by CI when it creates/updates the app
 az role assignment create --assignee-object-id "$CI_PRINCIPAL" --assignee-principal-type ServicePrincipal \
-  --role "Managed Identity Operator" --scope "$(az identity show -n "$UAMI_APP" -g "$RG" --query id -o tsv)" -o none
+  --role "Managed Identity Operator" --scope "$(az identity show -n "$UAMI_APP" -g "$RG" --query id -o tsv)" -o none 2>/dev/null || echo "  (роль уже есть)"
 
 say "9. Federated credential — GitHub Actions signs in with no stored secret"
 az identity federated-credential create --name gh-main --identity-name "$UAMI_CI" -g "$RG" \
   --issuer https://token.actions.githubusercontent.com \
   --subject "repo:${REPO}:ref:refs/heads/main" \
-  --audiences api://AzureADTokenExchange -o none
+  --audiences api://AzureADTokenExchange -o none 2>/dev/null || echo "  (fed-cred уже есть)"
 az identity federated-credential create --name gh-env-prod --identity-name "$UAMI_CI" -g "$RG" \
   --issuer https://token.actions.githubusercontent.com \
   --subject "repo:${REPO}:environment:production" \
-  --audiences api://AzureADTokenExchange -o none
+  --audiences api://AzureADTokenExchange -o none 2>/dev/null || echo "  (fed-cred уже есть)"
 
 say "10. Repo secrets (ids, not passwords)"
 TENANT=$(az account show --query tenantId -o tsv)

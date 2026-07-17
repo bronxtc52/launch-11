@@ -71,13 +71,33 @@ TEST_DATABASE_URL=postgresql://... python -m pytest -q             # + integrati
 
 ## Отладка диалога
 
-Начинай **с транскрипта, а не с кода**: `docker compose exec postgres psql -U launch11 -d
-launch11 -c "SELECT id, role, left(text,80) FROM messages ORDER BY id;"`. Логи решений —
-`docker compose logs bot | grep -E "tool=|controller:"`. За сессию 2026-07-16 корень **четыре
-раза подряд** оказывался в наших текстах/лимитах, а не в модели.
+Начинай **с транскрипта, а не с кода** — рассинхрон видно глазами, без чтения кода:
+
+```bash
+# прод: логи решений модели и контроллера
+az containerapp logs show -n ca-launch11-bot -g rg-launch11-prod --tail 60 \
+  | grep -E "tool=|controller:|contract violation|truncated|stranded"
+
+# транскрипт (PG прода; строка подключения — в KV launch11--production--DATABASE-URL)
+# два `user` подряд = бот что-то сказал и НЕ сохранил → модель этого не видит → петля
+SELECT id, role, left(text,80) FROM messages ORDER BY id;
+```
+
+За сессию 2026-07-16 корень **четыре раза подряд** оказывался в наших текстах/лимитах, а не
+в модели: «задай 5-7 вопросов» → служебная роль `user` → «варианты с фокусами» → `max_tokens`.
 
 ## Статус
 
-Прод-инфраструктуры **нет** — бот живёт в docker-compose на mh-central. Провижининг:
-`bot/ops/provision-prod.sh` (запускает владелец со своей сессии), дальше только CI.
-Детали и хвосты — строка `launch-11` в `~/projects/CLAUDE.md`.
+**ПРОД с 2026-07-17**, публичный. `ca-launch11-bot` в `rg-launch11-prod` (northeurope),
+ревизия Healthy, 1/1 реплика. Локальный docker-compose **погашен** — иначе 409.
+
+```bash
+az containerapp revision list -n ca-launch11-bot -g rg-launch11-prod -o table   # живая ревизия
+az containerapp logs show -n ca-launch11-bot -g rg-launch11-prod --tail 40      # логи прода
+```
+
+Деплой — **push в main** (CI сам: build → create-or-update → smoke до Healthy → rollback).
+Руками `az containerapp update` не делать: это break-glass, и у MSI mh-central всё равно нет прав.
+
+**Хвосты:** живой платёж звёздами не проверен ни разу; ночного дампа PG нет (PITR 7д по
+умолчанию); Sentry smoke из прода не делали. Детали — строка `launch-11` в `~/projects/CLAUDE.md`.
